@@ -742,6 +742,12 @@ class USERPREF_PT_system_display_graphics(SystemPanel, CenterAlignMixIn, Panel):
         import platform
         return platform.system() != "Darwin"
 
+        #is_apple_device = (platform.system() == 'Darwin') or (platform.system() == 'iOS') or (platform.system() == 'iPadOS')
+        #return !is_apple_device
+        # is_apple_device = (platform.system() == 'Darwin') or (platform.system() == 'iOS') or (platform.system() == 'iPadOS')
+        # return !is_apple_device
+        return platform.system() != 'Darwin'
+
     def draw_centered(self, context, layout):
         prefs = context.preferences
         system = prefs.system
@@ -772,7 +778,7 @@ class USERPREF_PT_system_os_settings(SystemPanel, CenterAlignMixIn, Panel):
     def poll(cls, _context):
         # macOS isn't supported.
         from sys import platform
-        if platform == "darwin":
+        if platform == "darwin" or platform == "ios":
             return False
         return True
 
@@ -866,7 +872,7 @@ class USERPREF_PT_system_memory(SystemPanel, CenterAlignMixIn, Panel):
         col.prop(system, "vbo_time_out", text="VBO Time Out")
         col.prop(system, "vbo_collection_rate", text="Garbage Collection Rate")
 
-        if sys.platform != "darwin":
+        if sys.platform != "darwin" and sys.platform != "ios":
             layout.separator()
             col = layout.column(align=True)
             col.active = system.gpu_backend != 'VULKAN'

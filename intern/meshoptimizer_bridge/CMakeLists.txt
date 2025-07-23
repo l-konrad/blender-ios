@@ -18,11 +18,16 @@ set(LIB
 
 # Equivalent `blender_add_lib`,
 # unrolled and stripped down to be able to set the library type to `SHARED`.
-add_library(bf_intern_meshopt_bridge SHARED "${SRC}")
+if(WITH_APPLE_CROSSPLATFORM)
+  # Use static lib to resolve nested signing issues on cross-platform device builds.
+  add_library(bf_intern_meshopt_bridge STATIC "${SRC}")
+else()
+  add_library(bf_intern_meshopt_bridge SHARED "${SRC}")
+endif()
 blender_link_libraries(bf_intern_meshopt_bridge "${LIB}")
 blender_source_group(bf_intern_meshopt_bridge "${SRC}")
 
-if(APPLE)
+if(APPLE AND NOT WITH_APPLE_CROSSPLATFORM)
   # On macOS, prevent the `meshopt` library (already present in the application bundle)
   # from being wrongly copied into the Xcode archive used for application distribution,
   # which pollutes the archive and prevents it from being properly recognized.

@@ -5574,6 +5574,15 @@ static wmEventType wm_event_type_from_ghost_key(GHOST_TKey key)
     case GHOST_kKeyUnknown:
       return EVT_UNKNOWNKEY;
 
+#if (WITH_APPLE_CROSSPLATFORM)
+      /* IOS_FIXME - Event to get multi text edit events from iOS into Blender */
+    case GHOST_kKeyTextEdit:
+      return EVT_TEXTEDIT;
+
+#else
+    case GHOST_kKeyF24:
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
       /* Ensure all members of this enum are handled, otherwise generate a compiler warning.
        * Note that these members have been handled, these ranges are to satisfy the compiler. */
@@ -6186,6 +6195,13 @@ void wm_event_add_ghostevent(wmWindowManager *wm,
         event.flag |= WM_EVENT_SCROLL_INVERT;
       }
 
+      /* Distinguish between single finger and multi-finger events for iOS.*/
+      if (pd->numFingers == 2) {
+        event.flag |= WM_EVENT_MULTITOUCH_TWO_FINGERS;
+      }
+      else if (pd->numFingers == 3) {
+        event.flag |= WM_EVENT_MULTITOUCH_THREE_FINGERS;
+      }
 #if !defined(WIN32) && !defined(__APPLE__)
       /* Ensure "auto" is used when supported. */
       char trackpad_scroll_direction = U.trackpad_scroll_direction;
