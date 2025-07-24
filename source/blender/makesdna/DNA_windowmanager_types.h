@@ -318,6 +318,7 @@ enum eKMI_MapType : uint8_t {
   KMI_TYPE_TEXTINPUT = 3,
   KMI_TYPE_TIMER = 4,
   KMI_TYPE_NDOF = 5,
+  KMI_TYPE_TOUCH = 6,
 };
 
 /** #wmKeyMap.flag */
@@ -411,7 +412,6 @@ struct wmKeyMapDiffItem {
   wmKeyMapItem *remove_item = nullptr;
   wmKeyMapItem *add_item = nullptr;
 };
-
 /**
  * Stored in WM, the actively used key-maps.
  */
