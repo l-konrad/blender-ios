@@ -228,6 +228,15 @@ class GHOST_WindowIOS : public GHOST_Window {
     return m_immediateDraw;
   }
 
+  /**
+   * Ghost system to send events to.
+   * \return the system used to create this window.
+   */
+  GHOST_SystemIOS *getSystem() const
+  {
+    return m_systemIOS;
+  }
+
 #ifdef WITH_INPUT_IME
   void beginIME(int32_t x, int32_t y, int32_t w, int32_t h, bool completed);
   void endIME();

@@ -13,6 +13,7 @@
 #include "GHOST_SystemIOS.h"
 #include "GHOST_TimerManager.hh"
 #include "GHOST_TimerTask.hh"
+#include "GHOST_Types.h"
 #include "GHOST_WindowManager.hh"
 
 #include "GHOST_ContextIOS.hh"
@@ -1363,6 +1364,13 @@ GHOST_WindowIOS *main_window = nullptr;
 
 - (void)mtkView:(nonnull MTKView *)view drawableSizeWillChange:(CGSize)size
 {
+  if (!main_window->getValid()) {
+    return;
+  }
+
+  GHOST_SystemIOS *system = main_window->getSystem();
+  system->pushEvent(
+      new GHOST_Event(system->getMilliSeconds(), GHOST_kEventWindowSize, main_window));
 }
 
 @end
