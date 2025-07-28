@@ -296,7 +296,8 @@ bool BVHMetal::build_BLAS_mesh(Progress &progress,
       accelDesc.usage |= (MTLAccelerationStructureUsageRefit |
                           MTLAccelerationStructureUsagePreferFastBuild);
     }
-    else if (@available(macos 26.0, *)) {
+#  if defined(MAC_OS_VERSION_26_0) || defined(IPHONE_OS_VERSION_26_0)
+    else if (@available(macos 26.0, ios 26.0, *)) {
       accelDesc.usage |= MTLAccelerationStructureUsagePreferFastIntersection;
     }
 
@@ -634,7 +635,8 @@ bool BVHMetal::build_BLAS_hair(Progress &progress,
       accelDesc.usage |= (MTLAccelerationStructureUsageRefit |
                           MTLAccelerationStructureUsagePreferFastBuild);
     }
-    else if (@available(macos 26.0, *)) {
+#    if defined(MAC_OS_VERSION_26_0) || defined(IPHONE_OS_VERSION_26_0)
+    else if (@available(macos 26.0, ios 26.0, *)) {
       accelDesc.usage |= MTLAccelerationStructureUsagePreferFastIntersection;
     }
 
@@ -853,7 +855,8 @@ bool BVHMetal::build_BLAS_pointcloud(Progress &progress,
       accelDesc.usage |= (MTLAccelerationStructureUsageRefit |
                           MTLAccelerationStructureUsagePreferFastBuild);
     }
-    else if (@available(macos 26.0, *)) {
+#  if defined(MAC_OS_VERSION_26_0) || defined(IPHONE_OS_VERSION_26_0)
+    else if (@available(macos 26.0, ios 26.0, *)) {
       accelDesc.usage |= MTLAccelerationStructureUsagePreferFastIntersection;
     }
 
@@ -1329,7 +1332,8 @@ bool BVHMetal::build_TLAS(Progress &progress,
       accelDesc.usage |= (MTLAccelerationStructureUsageRefit |
                           MTLAccelerationStructureUsagePreferFastBuild);
     }
-    else if (@available(macos 26.0, *)) {
+#  if defined(MAC_OS_VERSION_26_0) || defined(IPHONE_OS_VERSION_26_0)
+    else if (@available(macos 26.0, ios 26.0, *)) {
       accelDesc.usage |= MTLAccelerationStructureUsagePreferFastIntersection;
     }
 
