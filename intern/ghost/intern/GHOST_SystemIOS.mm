@@ -1,37 +1,152 @@
+/* SPDX-FileCopyrightText: 2025 Blender Authors
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later */
 
+#include "GHOST_SystemIOS.hh"
 
-#include "GHOST_SystemIOS.h"
+#include "GHOST_ContextIOS.hh"
+#include "GHOST_WindowIOS.hh"
 
-#include "GHOST_C-api.h"
+#include "GHOST_Debug.hh"
 #include "GHOST_EventButton.hh"
 #include "GHOST_EventCursor.hh"
 #include "GHOST_EventDragnDrop.hh"
-#include "GHOST_EventKey.hh"
-#include "GHOST_EventString.hh"
-#include "GHOST_EventTrackpad.hh"
-#include "GHOST_EventWheel.hh"
-#include "GHOST_TimerManager.hh"
-#include "GHOST_TimerTask.hh"
-#include "GHOST_WindowIOS.h"
 #include "GHOST_WindowManager.hh"
-
-#include "GHOST_ContextIOS.hh"
 
 #ifdef WITH_INPUT_NDOF
 #  include "GHOST_NDOFManagerCocoa.hh"
 #endif
 
-#include "AssertMacros.h"
-
-#import <GameController/GameController.h>
-#import <MetalKit/MTKDefines.h>
+#import <MetalKit/MTKView.h>
 #import <UIKit/UIKit.h>
 
 #include <sys/sysctl.h>
 #include <sys/time.h>
-#include <sys/types.h>
 
-#include <mach/mach_time.h>
+// #define IOS_SYSTEM_LOGGING
+#if defined(IOS_SYSTEM_LOGGING)
+#  define IOS_SYSTEM_LOG(...) NSLog(__VA_ARGS__)
+#else
+#  define IOS_SYSTEM_LOG(...)
+#endif
+
+extern "C" {
+struct bContext;
+static bContext *C = nullptr;
+}
+
+int argc = 0;
+const char **argv = nullptr;
+
+/* Implemented in wm.cc. */
+void WM_main_loop_body(bContext *C);
+int main_ios_callback(int argc, const char **argv);
+
+@interface IOSAppDelegate : UIResponder <UIApplicationDelegate>
+   
+@property(strong, nonatomic) UIWindow *window;
+
+@end
+
+@implementation IOSAppDelegate
+
+- (BOOL)application:(UIApplication *)application
+    didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
+{
+  main_ios_callback(argc, argv);
+
+  return YES;
+}
+
+@end
+
+@implementation GHOST_IOSMetalRenderer
+{
+  id<MTLDevice> _device;
+  id<MTLCommandQueue> _commandQueue;
+}
+
+- (nonnull instancetype)initWithMetalKitView:(nonnull MTKView *)mtkView
+{
+  self = [super init];
+  if (self) {
+    _device = mtkView.device;
+
+    /* Create the command queue. */
+    _commandQueue = [_device newCommandQueue];
+  }
+
+  return self;
+}
+
+- (void)drawInMTKView:(nonnull MTKView *)MTKView
+{
+  GHOST_SystemIOS *system = static_cast<GHOST_SystemIOS *>(GHOST_ISystem::getSystem());
+
+  /* We should always have a window... */
+  if (system->current_active_window) {
+
+    /* If the current window has some outstanding swaps we need to
+     * service them before handing control back to Blender otherwise
+     * they may go missing. */
+    if (system->current_active_window->deferred_swap_buffers_count) {
+      IOS_SYSTEM_LOG(@"Issuing oustanding swaps");
+      system->current_active_window->flushDeferredSwapBuffers();
+      /* Make sure we get another call to draw. */
+      system->current_active_window->needsDisplayUpdate();
+      return;
+    }
+
+    system->current_active_window->beginFrame();
+  }
+
+  /* Run the main loop to handle all events. */
+  if (C) {
+    WM_main_loop_body(C);
+  }
+
+  if (system->current_active_window) {
+    system->current_active_window->flushDeferredSwapBuffers();
+    system->current_active_window->endFrame();
+  }
+
+  /* Was there a request to switch windows? */
+  if (system->next_active_window != nullptr) {
+    if (system->current_active_window) {
+      system->current_active_window->resignKeyWindow();
+    }
+    system->next_active_window->makeKeyWindow();
+    system->next_active_window = nullptr;
+  }
+}
+
+- (void)mtkView:(nonnull MTKView *)view drawableSizeWillChange:(CGSize)size
+{
+  GHOST_SystemIOS *system = static_cast<GHOST_SystemIOS *>(GHOST_ISystem::getSystem());
+  if (!system->current_active_window) {
+    return;
+  }
+
+  system->pushEvent(new GHOST_Event(
+      system->getMilliSeconds(), GHOST_kEventWindowSize, system->current_active_window));
+}
+
+@end
+
+int GHOST_iosmain(int _argc, const char **_argv)
+{
+  argc = _argc;
+  argv = _argv;
+  @autoreleasepool {
+    return UIApplicationMain(
+        _argc, (char *_Nullable *)_argv, nil, NSStringFromClass([IOSAppDelegate class]));
+  }
+}
+
+void GHOST_iosfinalize(bContext *CTX)
+{
+  C = CTX;
+}
 
 #pragma mark KeyMap, mouse converters
 
@@ -338,14 +453,13 @@ void GHOST_SystemIOS::getMainDisplayDimensions(uint32_t &width, uint32_t &height
   CGFloat screenHeight = screenRect.size.height * scaling_fac;
 
   if (screenWidth <= 0 || screenHeight <= 0) {
-    assert(false);
+    GHOST_ASSERT(false, "Negative or null display dimmensions");
     screenWidth = 2532;
     screenHeight = 1170;
   }
 
   width = screenWidth;
   height = screenHeight;
-  assert(width > 0 && height > 0);
 }
 
 void GHOST_SystemIOS::getAllDisplayDimensions(uint32_t &width, uint32_t &height) const
