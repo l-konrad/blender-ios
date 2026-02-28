@@ -22,6 +22,8 @@
 
 #import <MetalKit/MTKView.h>
 #import <UIKit/UIKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <objc/runtime.h>
 
 #include <sys/sysctl.h>
 #include <sys/time.h>
@@ -32,6 +34,106 @@
 #else
 #  define IOS_SYSTEM_LOG(...)
 #endif
+
+#pragma mark - Security-Scoped URL Storage
+
+/**
+ * Dictionary mapping file paths to their original security-scoped NSURLs.
+ * Used to maintain access to files/directories returned by UIDocumentPickerViewController.
+ * Keys: NSString (absolute path), Values: NSURL (the security-scoped URL from the picker).
+ */
+static NSMutableDictionary<NSString *, NSURL *> *s_securityScopedURLs = nil;
+
+static void storeSecurityScopedURL(NSURL *url)
+{
+  if (!s_securityScopedURLs) {
+    s_securityScopedURLs = [[NSMutableDictionary alloc] init];
+  }
+  NSString *path = url.path;
+  if (path) {
+    s_securityScopedURLs[path] = url;
+    /* Also store the parent directory URL for temp file creation during saves. */
+    NSURL *dirURL = [url URLByDeletingLastPathComponent];
+    if (dirURL && dirURL.path) {
+      s_securityScopedURLs[dirURL.path] = dirURL;
+    }
+  }
+}
+
+static NSURL *lookupSecurityScopedURL(const char *filepath)
+{
+  if (!s_securityScopedURLs || !filepath) {
+    return nil;
+  }
+  NSString *path = [NSString stringWithUTF8String:filepath];
+  return s_securityScopedURLs[path];
+}
+
+#pragma mark - Native File Dialog Delegate
+
+/**
+ * Objective-C delegate for UIDocumentPickerViewController.
+ * On completion, pushes a GHOST_kEventNativeFileDialogResult event with the selected path
+ * (or nullptr on cancel) back to the GHOST event queue.
+ */
+@interface GHOST_IOSFilePickerDelegate
+    : NSObject <UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate>
+@property(nonatomic, assign) GHOST_SystemIOS *ghostSystem;
+@end
+
+@implementation GHOST_IOSFilePickerDelegate
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller
+    didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
+{
+  if (urls.count > 0) {
+    NSURL *url = urls.firstObject;
+
+    /* Start security-scoped access so Blender can read/write the file. */
+    [url startAccessingSecurityScopedResource];
+
+    /* Store the original security-scoped URL for later access (e.g., saving). */
+    storeSecurityScopedURL(url);
+
+    const char *path = [url.path UTF8String];
+    const size_t pathLen = strlen(path);
+    char *pathCopy = (char *)malloc(pathLen + 1);
+    memcpy(pathCopy, path, pathLen + 1);
+
+    GHOST_WindowIOS *window = _ghostSystem->current_active_window;
+    _ghostSystem->pushEvent(std::make_unique<GHOST_EventString>(
+        _ghostSystem->getMilliSeconds(),
+        GHOST_kEventNativeFileDialogResult,
+        window,
+        static_cast<GHOST_TEventDataPtr>(pathCopy)));
+    _ghostSystem->notifyExternalEventProcessed();
+  }
+  else {
+    [self documentPickerWasCancelled:controller];
+  }
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller
+{
+  /* Push a cancel event (nullptr data). */
+  GHOST_WindowIOS *window = _ghostSystem->current_active_window;
+  _ghostSystem->pushEvent(std::make_unique<GHOST_EventString>(
+      _ghostSystem->getMilliSeconds(),
+      GHOST_kEventNativeFileDialogResult,
+      window,
+      static_cast<GHOST_TEventDataPtr>(nullptr)));
+  _ghostSystem->notifyExternalEventProcessed();
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController
+{
+  /* Handle swipe-to-dismiss as a cancel. */
+  [self documentPickerWasCancelled:nil];
+}
+
+@end
+
+#pragma mark -
 
 namespace blender {
 struct bContext;
@@ -614,7 +716,8 @@ GHOST_TSuccess GHOST_SystemIOS::getButtons(GHOST_Buttons & /*buttons*/) const
 }
 GHOST_TCapabilityFlag GHOST_SystemIOS::getCapabilities() const
 {
-  return GHOST_TCapabilityFlag(GHOST_kCapabilityGPUReadFrontBuffer);
+  return GHOST_TCapabilityFlag(GHOST_kCapabilityGPUReadFrontBuffer |
+                               GHOST_kCapabilityNativeFileDialog);
 }
 
 #pragma mark Event handlers
@@ -750,18 +853,186 @@ const char *GHOST_SystemIOS::getKeyboardInput(GHOST_IWindow *window)
 
 GHOST_TSuccess GHOST_SystemIOS::startSecurityScopedFileAccess(const char *filepath)
 {
-  NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:filepath]];
+  /* First try to use a stored security-scoped URL from the file picker.
+   * Plain NSURLs created from path strings are NOT security-scoped and
+   * calling startAccessingSecurityScopedResource on them is a no-op. */
+  NSURL *url = lookupSecurityScopedURL(filepath);
+  if (!url) {
+    /* Also try the parent directory — Blender writes to temp files in the same dir. */
+    NSString *path = [NSString stringWithUTF8String:filepath];
+    NSString *parentPath = [path stringByDeletingLastPathComponent];
+    url = lookupSecurityScopedURL([parentPath UTF8String]);
+  }
+  if (!url) {
+    /* Fallback to a plain URL (works for paths within the sandbox). */
+    url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:filepath]];
+  }
   BOOL success = [url startAccessingSecurityScopedResource];
-
   return success ? GHOST_kSuccess : GHOST_kFailure;
 }
 
 GHOST_TSuccess GHOST_SystemIOS::stopSecurityScopedFileAccess(const char *filepath)
 {
-  NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:filepath]];
+  NSURL *url = lookupSecurityScopedURL(filepath);
+  if (!url) {
+    url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:filepath]];
+  }
   [url stopAccessingSecurityScopedResource];
-
   return GHOST_kSuccess;
+}
+
+GHOST_TSuccess GHOST_SystemIOS::showNativeFileDialog(const char *title,
+                                                      const char *default_path,
+                                                      const char *filter_glob,
+                                                      GHOST_TFileDialogAction action)
+{
+  @autoreleasepool {
+    if (!current_active_window) {
+      return GHOST_kFailure;
+    }
+
+    /* Build an array of UTTypes from the filter_glob.
+     * Supported patterns: "*.blend", "*.png;*.jpg", etc.
+     * Falls back to UTTypeData (all files) if nothing specific matches. */
+    NSMutableArray<UTType *> *contentTypes = [NSMutableArray array];
+
+    if (filter_glob && filter_glob[0] != '\0') {
+      NSString *glob = [NSString stringWithUTF8String:filter_glob];
+      /* Split by common separators: ";", " ", ",". */
+      NSArray<NSString *> *patterns = [glob
+          componentsSeparatedByCharactersInSet:
+              [NSCharacterSet characterSetWithCharactersInString:@"; ,"]];
+
+      for (NSString *pattern in patterns) {
+        NSString *ext = pattern;
+        /* Strip leading "*." or "." */
+        if ([ext hasPrefix:@"*."]) {
+          ext = [ext substringFromIndex:2];
+        }
+        else if ([ext hasPrefix:@"."]) {
+          ext = [ext substringFromIndex:1];
+        }
+
+        if (ext.length == 0) {
+          continue;
+        }
+
+        UTType *type = [UTType typeWithFilenameExtension:ext];
+        if (type) {
+          [contentTypes addObject:type];
+        }
+      }
+    }
+
+    /* If no specific types were resolved, allow all content. */
+    if (contentTypes.count == 0) {
+      [contentTypes addObject:UTTypeData];
+      [contentTypes addObject:UTTypeFolder];
+    }
+
+    UIDocumentPickerViewController *picker = nil;
+
+    if (action == GHOST_kFileDialogOpen) {
+      picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:contentTypes];
+      picker.allowsMultipleSelection = NO;
+    }
+    else {
+      /* For save, use initForExportingURLs to show a proper "save to" dialog.
+       * iOS requires a source file to export — if the file exists at default_path, use it directly.
+       * Otherwise create a temporary placeholder file so the user can choose a destination.
+       * The placeholder will be overwritten by Blender's actual save operation. */
+      NSURL *sourceURL = nil;
+
+      if (default_path && default_path[0] != '\0') {
+        NSString *pathStr = [NSString stringWithUTF8String:default_path];
+        BOOL isDir = NO;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:pathStr isDirectory:&isDir] && !isDir)
+        {
+          sourceURL = [NSURL fileURLWithPath:pathStr];
+        }
+      }
+
+      if (!sourceURL) {
+        /* Create a temporary placeholder file.
+         * Derive the filename from default_path if possible, otherwise use "untitled.blend". */
+        NSString *filename = @"untitled.blend";
+        if (default_path && default_path[0] != '\0') {
+          NSString *pathStr = [NSString stringWithUTF8String:default_path];
+          NSString *lastComponent = [pathStr lastPathComponent];
+          if (lastComponent.length > 0 && [lastComponent containsString:@"."]) {
+            filename = lastComponent;
+          }
+        }
+
+        NSString *tempDir = NSTemporaryDirectory();
+        NSString *tempPath = [tempDir stringByAppendingPathComponent:filename];
+        /* Create an empty file as placeholder. */
+        [[NSFileManager defaultManager] createFileAtPath:tempPath contents:[NSData data] attributes:nil];
+        sourceURL = [NSURL fileURLWithPath:tempPath];
+      }
+
+      if (sourceURL) {
+        picker = [[UIDocumentPickerViewController alloc] initForExportingURLs:@[ sourceURL ]];
+      }
+    }
+
+    if (!picker) {
+      return GHOST_kFailure;
+    }
+
+    /* Create and retain the delegate. The delegate will be released when the picker is dismissed.
+     * We use objc_setAssociatedObject to tie its lifetime to the picker. */
+    GHOST_IOSFilePickerDelegate *delegate = [[GHOST_IOSFilePickerDelegate alloc] init];
+    delegate.ghostSystem = this;
+    picker.delegate = delegate;
+    picker.presentationController.delegate = delegate;
+
+    /* Tie delegate lifetime to picker via associated object. */
+    objc_setAssociatedObject(
+        picker, "ghost_delegate", delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    if (title) {
+      picker.title = [NSString stringWithUTF8String:title];
+    }
+
+    /* Set initial directory if available. */
+    if (default_path && default_path[0] != '\0') {
+      NSString *pathStr = [NSString stringWithUTF8String:default_path];
+      BOOL isDir = NO;
+      if ([[NSFileManager defaultManager] fileExistsAtPath:pathStr isDirectory:&isDir]) {
+        NSURL *dirURL;
+        if (isDir) {
+          dirURL = [NSURL fileURLWithPath:pathStr];
+        }
+        else {
+          dirURL = [[NSURL fileURLWithPath:pathStr] URLByDeletingLastPathComponent];
+        }
+        picker.directoryURL = dirURL;
+      }
+    }
+
+    /* Present the picker from the root view controller. */
+    UIWindow *uiWindow = current_active_window->rootWindow;
+    UIViewController *rootVC = uiWindow.rootViewController;
+    if (!rootVC) {
+      return GHOST_kFailure;
+    }
+
+    /* If a modal is already presented, dismiss it first. */
+    if (rootVC.presentedViewController) {
+      [rootVC dismissViewControllerAnimated:NO
+                                 completion:^{
+                                   [rootVC presentViewController:picker
+                                                        animated:YES
+                                                      completion:nil];
+                                 }];
+    }
+    else {
+      [rootVC presentViewController:picker animated:YES completion:nil];
+    }
+
+    return GHOST_kSuccess;
+  }
 }
 
 // Note: called from NSWindow subclass

@@ -2127,6 +2127,16 @@ static bool wm_file_write(bContext *C,
     return false;
   }
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* On iOS, start security-scoped access before writing.
+   * Files picked via UIDocumentPickerViewController require security-scoped access
+   * for read/write. */
+  GHOST_ISystem *ghost_system = GHOST_ISystem::getSystem();
+  if (ghost_system) {
+    ghost_system->startSecurityScopedFileAccess(filepath);
+  }
+#endif
+
   /* Call pre-save callbacks before writing preview,
    * that way you can generate custom file thumbnail. */
 
@@ -2138,7 +2148,16 @@ static bool wm_file_write(bContext *C,
   if (const int st_mode = BLI_file_stat_mode(filepath)) {
     bool ok = true;
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+    /* On iOS, skip the POSIX access() writable check entirely.
+     * access() does not honor iOS sandbox extensions, security-scoped resources,
+     * or App Group / File Provider paths. The actual open()/write() calls in
+     * BLO_write_file will correctly respect sandbox permissions and report
+     * meaningful errors if writing truly fails. */
+    if (false) {
+#else
     if (!BLI_file_is_writable(filepath)) {
+#endif
       BKE_reportf(
           reports, RPT_ERROR, "Cannot save blend file, path \"%s\" is not writable", filepath);
       ok = false;
