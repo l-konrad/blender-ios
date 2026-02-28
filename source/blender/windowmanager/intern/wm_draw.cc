@@ -51,6 +51,7 @@
 #include "GPU_debug.hh"
 #include "GPU_framebuffer.hh"
 #include "GPU_immediate.hh"
+#include "GPU_immediate_util.hh"
 #include "GPU_matrix.hh"
 #include "GPU_state.hh"
 #include "GPU_texture.hh"
@@ -71,6 +72,7 @@
 #include "wm_window_private.hh"
 
 #include "UI_resources.hh"
+#include "UI_interface_c.hh"
 
 #include "IMB_colormanagement.hh"
 
@@ -1136,6 +1138,22 @@ static void wm_draw_window_onscreen(bContext *C, wmWindow *win, int view)
 #endif
 
   /* Blit non-overlapping area regions. */
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* iOS Floating Overlay: draw a dimmed background behind the floating panel. */
+  if (screen->flag & SCREEN_FLOATING_OVERLAY) {
+    const int2 win_size = WM_window_native_pixel_size(win);
+    GPU_blend(GPU_BLEND_ALPHA);
+    const uint pos = GPU_vertformat_attr_add(
+        immVertexFormat(), "pos", gpu::VertAttrType::SFLOAT_32_32);
+    immBindBuiltinProgram(GPU_SHADER_3D_UNIFORM_COLOR);
+    /* Semi-transparent dark overlay covering the full window. */
+    immUniformColor4f(0.0f, 0.0f, 0.0f, 0.45f);
+    immRectf(pos, 0.0f, 0.0f, float(win_size[0]), float(win_size[1]));
+    immUnbindProgram();
+    GPU_blend(GPU_BLEND_NONE);
+  }
+#endif
+
   ED_screen_areas_iter (win, screen, area) {
     for (ARegion &region : area->regionbase) {
       if (!region.runtime->visible) {
@@ -1190,6 +1208,63 @@ static void wm_draw_window_onscreen(bContext *C, wmWindow *win, int view)
 
   /* After area regions so we can do area 'overlay' drawing. */
   ui::theme::theme_set(0, 0);
+
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* iOS Floating Overlay: draw border and close button for the floating panel. */
+  if (screen->flag & SCREEN_FLOATING_OVERLAY) {
+    ED_screen_areas_iter (win, screen, area) {
+      /* Only draw for non-global (main) areas. */
+      if (!ED_area_is_global(area)) {
+        const float border_width = 1.0f * UI_SCALE_FAC;
+        const rctf panel_rect = {float(area->totrct.xmin) - border_width,
+                                 float(area->totrct.xmax) + border_width,
+                                 float(area->totrct.ymin) - border_width,
+                                 float(area->totrct.ymax) + border_width};
+
+        GPU_blend(GPU_BLEND_ALPHA);
+
+        /* Panel outline. */
+        const float outline_color[4] = {0.3f, 0.3f, 0.3f, 0.8f};
+        ui::draw_roundbox_corner_set(ui::CNR_ALL);
+        ui::draw_roundbox_4fv(&panel_rect, false, 8.0f * UI_SCALE_FAC, outline_color);
+
+        /* Close button: circle with X near the top-right of the panel,
+         * offset to avoid overlapping header bar and toolbar elements. */
+        const float btn_radius = 14.0f * UI_SCALE_FAC;
+        const float btn_cx = panel_rect.xmax - 20.0f * UI_SCALE_FAC;
+        const float btn_cy = panel_rect.ymax - 150.0f * UI_SCALE_FAC;
+
+        /* Filled dark circle background. */
+        const uint pos = GPU_vertformat_attr_add(
+            immVertexFormat(), "pos", gpu::VertAttrType::SFLOAT_32_32);
+        immBindBuiltinProgram(GPU_SHADER_3D_UNIFORM_COLOR);
+        immUniformColor4f(0.15f, 0.15f, 0.15f, 0.9f);
+        imm_draw_circle_fill_2d(pos, btn_cx, btn_cy, btn_radius, 24);
+
+        /* Circle outline. */
+        immUniformColor4f(0.5f, 0.5f, 0.5f, 0.9f);
+        imm_draw_circle_wire_2d(pos, btn_cx, btn_cy, btn_radius, 24);
+
+        /* Draw X mark. */
+        const float x_half = btn_radius * 0.4f;
+        immUniformColor4f(0.85f, 0.85f, 0.85f, 1.0f);
+        GPU_line_width(2.0f * UI_SCALE_FAC);
+        immBegin(GPU_PRIM_LINES, 4);
+        immVertex2f(pos, btn_cx - x_half, btn_cy - x_half);
+        immVertex2f(pos, btn_cx + x_half, btn_cy + x_half);
+        immVertex2f(pos, btn_cx - x_half, btn_cy + x_half);
+        immVertex2f(pos, btn_cx + x_half, btn_cy - x_half);
+        immEnd();
+        GPU_line_width(1.0f);
+
+        immUnbindProgram();
+        GPU_blend(GPU_BLEND_NONE);
+        break; /* Only one main area in maximized screen. */
+      }
+    }
+  }
+#endif
+
   ED_screen_draw_edges(win);
 
   /* Needs zero offset here or it looks blurry. #128112. */

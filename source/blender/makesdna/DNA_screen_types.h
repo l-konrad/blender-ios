@@ -45,6 +45,8 @@ struct Layout;
 enum eScreen_Flag : short {
   SCREEN_DEPRECATED = 1,
   SCREEN_COLLAPSE_STATUSBAR = 2,
+  /** Screen is a floating overlay panel (iOS temp spaces). */
+  SCREEN_FLOATING_OVERLAY = 4,
 };
 ENUM_OPERATORS(eScreen_Flag)
 

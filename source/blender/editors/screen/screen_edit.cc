@@ -1761,6 +1761,11 @@ ScrArea *ED_screen_state_toggle(bContext *C,
 
     screen->state = SCREENNORMAL;
     screen->flag = oldscreen->flag;
+#ifdef WITH_APPLE_CROSSPLATFORM
+    /* SCREEN_FLOATING_OVERLAY is only meaningful for temporary fullscreen overlays.
+     * Never propagate it back to the restored normal screen. */
+    screen->flag &= ~SCREEN_FLOATING_OVERLAY;
+#endif
     screen->fullscreen_flag = oldscreen->fullscreen_flag;
 
     /* Find old area we may have swapped dummy space data to. It's swapped back here. */
@@ -1921,6 +1926,11 @@ ScrArea *ED_screen_temp_space_open(
       /* Create a new fullscreen area. */
       ScrArea *area = ED_screen_full_newspace(C, ctx_area, int(space_type));
       (static_cast<SpaceLink *>(area->spacedata.first))->link_flag |= SPACE_FLAG_TYPE_TEMPORARY;
+#ifdef WITH_APPLE_CROSSPLATFORM
+      /* Mark the new screen as a floating overlay so it draws as a centered panel
+       * with dimmed background instead of taking over the entire window. */
+      CTX_wm_screen(C)->flag |= SCREEN_FLOATING_OVERLAY;
+#endif
       return area;
     }
   }

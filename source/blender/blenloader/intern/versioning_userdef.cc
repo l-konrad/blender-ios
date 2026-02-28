@@ -1616,6 +1616,28 @@ void blo_do_versions_userdef(UserDef *userdef)
     userdef->border_width = 2;
   }
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* iPad touch: widen area borders for easier finger resizing (min 4px). */
+  if (userdef->border_width < 4) {
+    userdef->border_width = 4;
+  }
+  /* iPad touch: increase drag threshold for finger (prevent accidental drags). */
+  if (userdef->drag_threshold_mouse < 8) {
+    userdef->drag_threshold_mouse = 8;
+  }
+  /* iPad touch: increase move threshold to reduce jitter. */
+  if (userdef->move_threshold < 3) {
+    userdef->move_threshold = 3;
+  }
+  /* iPad touch: larger gizmos for finger interaction. */
+  if (userdef->gizmo_size < 88) {
+    userdef->gizmo_size = 88;
+  }
+  if (userdef->gizmo_size_navigate_v3d < 95) {
+    userdef->gizmo_size_navigate_v3d = 95;
+  }
+#endif
+
   if (!USER_VERSION_ATLEAST(405, 10)) {
     static const Map<std::string, std::string> keymap_renames = {
         {"SequencerCommon", "Video Sequence Editor"},
