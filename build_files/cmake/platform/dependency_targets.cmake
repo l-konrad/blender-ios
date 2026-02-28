@@ -140,8 +140,16 @@ target_link_libraries(bf_deps_png INTERFACE ${PNG_LIBRARIES})
 # -----------------------------------------------------------------------------
 # Configure OpenImageIO
 
-add_library(bf::dependencies::openimageio ALIAS OpenImageIO::OpenImageIO)
-get_target_property(OPENIMAGEIO_TOOL OpenImageIO::oiiotool LOCATION)
+if(TARGET OpenImageIO::OpenImageIO)
+  add_library(bf::dependencies::openimageio ALIAS OpenImageIO::OpenImageIO)
+  get_target_property(OPENIMAGEIO_TOOL OpenImageIO::oiiotool LOCATION)
+else()
+  # Fallback for iOS/cross-platform builds using FindOpenImageIO module
+  add_library(bf_deps_openimageio INTERFACE)
+  add_library(bf::dependencies::openimageio ALIAS bf_deps_openimageio)
+  target_include_directories(bf_deps_openimageio SYSTEM INTERFACE ${OPENIMAGEIO_INCLUDE_DIRS})
+  target_link_libraries(bf_deps_openimageio INTERFACE ${OPENIMAGEIO_LIBRARIES})
+endif()
 
 # -----------------------------------------------------------------------------
 # Configure USD
@@ -182,7 +190,22 @@ endif()
 # -----------------------------------------------------------------------------
 # Configure OpenEXR
 
-add_library(bf::dependencies::openexr ALIAS OpenEXR::OpenEXR)
+if(TARGET OpenEXR::OpenEXR)
+  add_library(bf::dependencies::openexr ALIAS OpenEXR::OpenEXR)
+else()
+  add_library(bf_deps_openexr INTERFACE)
+  add_library(bf::dependencies::openexr ALIAS bf_deps_openexr)
+  target_include_directories(bf_deps_openexr SYSTEM INTERFACE ${OPENEXR_INCLUDE_DIRS})
+  target_link_libraries(bf_deps_openexr INTERFACE ${OPENEXR_LIBRARIES})
+endif()
+
+add_library(bf_deps_optional_openexr INTERFACE)
+add_library(bf::dependencies::optional::openexr ALIAS bf_deps_optional_openexr)
+
+if(WITH_IMAGE_OPENEXR)
+  target_compile_definitions(bf_deps_optional_openexr INTERFACE WITH_IMAGE_OPENEXR)
+  target_link_libraries(bf_deps_optional_openexr INTERFACE bf::dependencies::openexr)
+endif()
 
 # -----------------------------------------------------------------------------
 # Configure WebP
@@ -461,7 +484,17 @@ endif()
 # Configure libfmt
 #
 
-add_library(bf::dependencies::fmt ALIAS fmt::fmt)
+if(TARGET fmt::fmt)
+  add_library(bf::dependencies::fmt ALIAS fmt::fmt)
+else()
+  # Fallback: fmt bundled inside OpenImageIO for iOS builds (header-only)
+  add_library(bf_deps_fmt INTERFACE)
+  add_library(bf::dependencies::fmt ALIAS bf_deps_fmt)
+  target_compile_definitions(bf_deps_fmt INTERFACE FMT_HEADER_ONLY=1)
+  if(OPENIMAGEIO_INCLUDE_DIRS)
+    target_include_directories(bf_deps_fmt SYSTEM INTERFACE ${OPENIMAGEIO_INCLUDE_DIRS}/OpenImageIO/detail)
+  endif()
+endif()
 
 # -----------------------------------------------------------------------------
 # Configure OSL
