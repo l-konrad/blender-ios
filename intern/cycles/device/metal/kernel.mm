@@ -310,12 +310,18 @@ void ShaderCache::load_kernel(DeviceKernel device_kernel,
        * limit. */
       int max_mtlcompiler_threads = 2;
 
-#  if defined(MAC_OS_VERSION_13_3)
+#  ifndef WITH_APPLE_CROSSPLATFORM
+#    if defined(MAC_OS_VERSION_13_3)
       if (@available(macOS 13.3, *)) {
         /* Subtract one to avoid contention with the real-time GPU module. */
         max_mtlcompiler_threads = max(2,
                                       int([mtlDevice maximumConcurrentCompilationTaskCount]) - 1);
       }
+#    endif
+#  else
+      /* iOS: No API to query max compiler threads, but Apple A-series/M-series chips
+       * handle 4 concurrent compilations well. */
+      max_mtlcompiler_threads = 4;
 #  endif
 
       metal_printf("Spawning %d Cycles kernel compilation threads", max_mtlcompiler_threads);
