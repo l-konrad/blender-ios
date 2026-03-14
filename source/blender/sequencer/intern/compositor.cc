@@ -132,8 +132,9 @@ void CompositorContext::write_viewer_impl(const compositor::Result &result, ImBu
   /* Realize the transforms if needed. */
   const InputDescriptor input_descriptor = {ResultType::Color,
                                             InputRealizationMode::OperationDomain};
-  SimpleOperation *realization_operation = RealizeOnDomainOperation::construct_if_needed(
-      *this, result, input_descriptor, result.domain());
+  std::unique_ptr<SimpleOperation> realization_operation =
+      RealizeOnDomainOperation::construct_if_needed(
+          *this, result, input_descriptor, result.domain());
 
   if (realization_operation) {
     Result realize_input = this->create_result(ResultType::Color, result.precision());
@@ -145,7 +146,6 @@ void CompositorContext::write_viewer_impl(const compositor::Result &result, ImBu
     this->write_output(realized_viewer_result, image);
     realized_viewer_result.release();
     viewer_was_written_ = true;
-    delete realization_operation;
     return;
   }
 
@@ -221,15 +221,15 @@ void CompositorContext::write_outputs(const bNodeTree &node_group,
     /* Realize the output transforms if needed. */
     const InputDescriptor input_descriptor = {ResultType::Color,
                                               InputRealizationMode::OperationDomain};
-    SimpleOperation *realization_operation = RealizeOnDomainOperation::construct_if_needed(
-        *this, output_result, input_descriptor, output_result.domain());
+    std::unique_ptr<SimpleOperation> realization_operation =
+        RealizeOnDomainOperation::construct_if_needed(
+            *this, output_result, input_descriptor, output_result.domain());
     if (realization_operation) {
       realization_operation->map_input_to_result(&output_result);
       realization_operation->evaluate();
       Result &realized_output_result = realization_operation->get_result();
       this->write_output(realized_output_result, output_image);
       realized_output_result.release();
-      delete realization_operation;
       continue;
     }
 

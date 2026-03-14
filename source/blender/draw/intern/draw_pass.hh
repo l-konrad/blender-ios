@@ -472,6 +472,13 @@ class PassBase {
    * Internal Helpers
    */
 
+  /** Return true if a shader is bound and ready for drawing/dispatching.
+   * On iOS, some shaders may fail to compile; this avoids crashing. */
+  bool has_active_shader() const
+  {
+    return LIKELY(shader_ != nullptr);
+  }
+
   int push_constant_offset(const char *name);
 
   void clear(GPUFrameBufferBits planes, float4 color, float depth, uint8_t stencil);
@@ -910,7 +917,7 @@ inline void PassBase<T>::draw(gpu::Batch *batch,
     return;
   }
   BLI_assert(batch);
-  if (UNLIKELY(!shader_)) {
+  if (!has_active_shader()) {
     return;
   }
   draw_commands_buf_.append_draw(headers_,
@@ -945,7 +952,7 @@ inline void PassBase<T>::draw_expand(gpu::Batch *batch,
   if (instance_len == 0 || vertex_len == 0 || primitive_len == 0) {
     return;
   }
-  if (UNLIKELY(!shader_)) {
+  if (!has_active_shader()) {
     return;
   }
   draw_commands_buf_.append_draw(headers_,
@@ -995,7 +1002,7 @@ inline void PassBase<T>::draw_indirect(gpu::Batch *batch,
                                        StorageBuffer<DrawCommand, true> &indirect_buffer,
                                        ResourceID res_id)
 {
-  if (UNLIKELY(!shader_)) {
+  if (!has_active_shader()) {
     return;
   }
   create_command(Type::DrawIndirect).draw_indirect = {batch, &indirect_buffer, res_id};
@@ -1016,7 +1023,7 @@ inline void PassBase<T>::draw_procedural_indirect(
 
 template<class T> inline void PassBase<T>::dispatch(int group_len)
 {
-  if (UNLIKELY(!shader_)) {
+  if (!has_active_shader()) {
     return;
   }
   create_command(Type::Dispatch).dispatch = {int3(group_len, 1, 1)};
@@ -1024,7 +1031,7 @@ template<class T> inline void PassBase<T>::dispatch(int group_len)
 
 template<class T> inline void PassBase<T>::dispatch(int2 group_len)
 {
-  if (UNLIKELY(!shader_)) {
+  if (!has_active_shader()) {
     return;
   }
   create_command(Type::Dispatch).dispatch = {int3(group_len.x, group_len.y, 1)};
@@ -1032,7 +1039,7 @@ template<class T> inline void PassBase<T>::dispatch(int2 group_len)
 
 template<class T> inline void PassBase<T>::dispatch(int3 group_len)
 {
-  if (UNLIKELY(!shader_)) {
+  if (!has_active_shader()) {
     return;
   }
   create_command(Type::Dispatch).dispatch = {group_len};
@@ -1040,7 +1047,7 @@ template<class T> inline void PassBase<T>::dispatch(int3 group_len)
 
 template<class T> inline void PassBase<T>::dispatch(int3 *group_len)
 {
-  if (UNLIKELY(!shader_)) {
+  if (!has_active_shader()) {
     return;
   }
   create_command(Type::Dispatch).dispatch = {group_len};
@@ -1049,7 +1056,7 @@ template<class T> inline void PassBase<T>::dispatch(int3 *group_len)
 template<class T>
 inline void PassBase<T>::dispatch(StorageBuffer<DispatchCommand> &indirect_buffer)
 {
-  if (UNLIKELY(!shader_)) {
+  if (!has_active_shader()) {
     return;
   }
   create_command(Type::DispatchIndirect).dispatch_indirect = {&indirect_buffer};
