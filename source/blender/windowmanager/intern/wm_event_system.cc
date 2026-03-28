@@ -2972,6 +2972,11 @@ static eHandlerActionFlag wm_handler_fileselect_do(bContext *C,
         ScrArea *ctx_area = CTX_wm_area(C);
 
         wmWindow *temp_win = nullptr;
+#ifdef WITH_APPLE_CROSSPLATFORM
+        /* On iOS the native file picker is used; no temporary file browser window was opened,
+         * so skip the SpaceFile cleanup and window close logic. */
+        (void)ctx_area;
+#else
         for (wmWindow &win : wm->windows) {
           bScreen *screen = WM_window_get_active_screen(&win);
           ScrArea *file_area = static_cast<ScrArea *>(screen->areabase.first);
@@ -3022,6 +3027,7 @@ static eHandlerActionFlag wm_handler_fileselect_do(bContext *C,
           ED_fileselect_params_to_userdef(static_cast<SpaceFile *>(ctx_area->spacedata.first));
           ED_screen_full_prevspace(C, ctx_area);
         }
+#endif /* !WITH_APPLE_CROSSPLATFORM */
       }
 
       CTX_wm_window_set(C, root_win);
@@ -3044,8 +3050,31 @@ static eHandlerActionFlag wm_handler_fileselect_do(bContext *C,
           wm->op_undo_depth++;
         }
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+        /* On iOS, bracket the operator exec with security-scoped file access.
+         * Files picked via UIDocumentPickerViewController require this for
+         * read/write through standard POSIX I/O (fopen etc.). */
+        char ios_filepath[1024] = "";
+        {
+          PropertyRNA *prop_fp = RNA_struct_find_property(handler->op->ptr, "filepath");
+          if (prop_fp) {
+            RNA_property_string_get(handler->op->ptr, prop_fp, ios_filepath);
+          }
+        }
+        GHOST_ISystem *ghost_system_fs = GHOST_ISystem::getSystem();
+        if (ghost_system_fs && ios_filepath[0] != '\0') {
+          ghost_system_fs->startSecurityScopedFileAccess(ios_filepath);
+        }
+#endif
+
         const wmOperatorStatus retval = handler->op->type->exec(C, handler->op);
         OPERATOR_RETVAL_CHECK(retval);
+
+#ifdef WITH_APPLE_CROSSPLATFORM
+        if (ghost_system_fs && ios_filepath[0] != '\0') {
+          ghost_system_fs->stopSecurityScopedFileAccess(ios_filepath);
+        }
+#endif
 
         /* XXX check this carefully, `CTX_wm_manager(C) == wm` is a bit hackish. */
         if (handler->op->type->flag & OPTYPE_UNDO && CTX_wm_manager(C) == wm) {
