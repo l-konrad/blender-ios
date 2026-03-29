@@ -17,6 +17,7 @@
 #include <memory>
 #include "GHOST_EventTouch.hh"
 #include "GHOST_EventTrackpad.hh"
+#include "GHOST_EventWheel.hh"
 
 #import <GameController/GameController.h>
 #import <Metal/Metal.h>
@@ -54,6 +55,10 @@ typedef struct UserInputEvent {
     PINCH_GESTURE,
     LEFT_BUTTON_DOWN,
     LEFT_BUTTON_UP,
+    RIGHT_BUTTON_DOWN,
+    RIGHT_BUTTON_UP,
+    MIDDLE_BUTTON_DOWN,
+    MIDDLE_BUTTON_UP,
     PENCIL_TAP,
   };
   EventTypes event_list[10];
@@ -97,6 +102,14 @@ typedef struct UserInputEvent {
         return @"LB-DOWN";
       case LEFT_BUTTON_UP:
         return @"LB-UP";
+      case RIGHT_BUTTON_DOWN:
+        return @"RB-DOWN";
+      case RIGHT_BUTTON_UP:
+        return @"RB-UP";
+      case MIDDLE_BUTTON_DOWN:
+        return @"MB-DOWN";
+      case MIDDLE_BUTTON_UP:
+        return @"MB-UP";
       case PENCIL_TAP:
         return @"PENCIL-TAP";
     }
@@ -234,7 +247,8 @@ typedef struct UserInputEvent {
 @end
 
 /* GHOSTUIWindow interface. */
-@interface GHOSTUIWindow : UIWindow <UIGestureRecognizerDelegate, UIPencilInteractionDelegate>
+@interface GHOSTUIWindow
+    : UIWindow <UIGestureRecognizerDelegate, UIPencilInteractionDelegate, UIPointerInteractionDelegate>
 {
   GHOST_SystemIOS *system;
   GHOST_WindowIOS *window;
@@ -252,6 +266,19 @@ typedef struct UserInputEvent {
   UIScreenEdgePanGestureRecognizer *edge_swipe_left;
   UIScreenEdgePanGestureRecognizer *edge_swipe_right;
   UILongPressGestureRecognizer *long_press_gesture_recognizer;
+
+  /* Indirect pointer (Bluetooth mouse / trackpad) support. */
+  UIPointerInteraction *pointer_interaction;
+  UIHoverGestureRecognizer *mouse_hover_recognizer;
+  /** Tracks which mouse buttons are currently held (bitmask of UIEventButtonMask values). */
+  UIEventButtonMask mouse_buttons_held;
+  /** Last known mouse cursor position (scaled to window pixels). */
+  int32_t mouse_cursor_x;
+  int32_t mouse_cursor_y;
+  /** True once we have a valid cursor position from hover or touch. */
+  bool mouse_cursor_valid;
+  /** True while GCMouse middle button is held (for drag tracking). */
+  bool mouse_middle_held;
 
   /* Data from the Apple pencil */
   UITouch *current_pencil_touch;
@@ -313,6 +340,11 @@ typedef struct UserInputEvent {
   toolbar_enabled = true;
   toolbar = nil;
   last_tap_with_pencil = false;
+  mouse_buttons_held = 0;
+  mouse_cursor_x = 0;
+  mouse_cursor_y = 0;
+  mouse_cursor_valid = false;
+  mouse_middle_held = false;
   external_keyboard_connected = [GCKeyboard coalescedKeyboard] != nil;
 
   /* Register for notifications of chnanges to the onscreen keyboard. */
@@ -465,6 +497,38 @@ typedef struct UserInputEvent {
   long_press_gesture_recognizer.allowedTouchTypes = @[ @(UITouchTypeDirect) ];
   long_press_gesture_recognizer.delegate = self;
   [window->getView() addGestureRecognizer:long_press_gesture_recognizer];
+
+  /* Bluetooth mouse / trackpad: pointer interaction for cursor style. */
+  if (@available(iOS 13.4, *)) {
+    pointer_interaction = [[UIPointerInteraction alloc] initWithDelegate:self];
+    [window->getView() addInteraction:pointer_interaction];
+
+    /* Hover gesture recognizer for indirect pointer (mouse cursor movement). */
+    mouse_hover_recognizer = [[UIHoverGestureRecognizer alloc]
+        initWithTarget:self
+                action:@selector(handleMouseHover:)];
+    mouse_hover_recognizer.allowedTouchTypes = @[ @(UITouchTypeIndirectPointer) ];
+    [window->getView() addGestureRecognizer:mouse_hover_recognizer];
+  }
+
+  /* GCMouse for scroll-wheel events from Bluetooth mice. */
+  if (@available(iOS 14.0, *)) {
+    if (&GCMouseDidConnectNotification != NULL) {
+      [[NSNotificationCenter defaultCenter] addObserver:self
+                                               selector:@selector(mouseDidConnect:)
+                                                   name:GCMouseDidConnectNotification
+                                                 object:nil];
+      [[NSNotificationCenter defaultCenter] addObserver:self
+                                               selector:@selector(mouseDidDisconnect:)
+                                                   name:GCMouseDidDisconnectNotification
+                                                 object:nil];
+      /* Attach to any already-connected mouse. */
+      GCMouse *mouse = [GCMouse current];
+      if (mouse) {
+        [self setupGCMouse:mouse];
+      }
+    }
+  }
 }
 
 /* Turn the user inputs into Blender events.
@@ -557,6 +621,38 @@ typedef struct UserInputEvent {
                                       false,
                                       2));
           break;
+        case UserInputEvent::EventTypes::RIGHT_BUTTON_DOWN:
+          system->pushEvent(
+              std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                    GHOST_kEventButtonDown,
+                                    window,
+                                    GHOST_kButtonMaskRight,
+                                    tablet_data));
+          break;
+        case UserInputEvent::EventTypes::RIGHT_BUTTON_UP:
+          system->pushEvent(
+              std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                    GHOST_kEventButtonUp,
+                                    window,
+                                    GHOST_kButtonMaskRight,
+                                    tablet_data));
+          break;
+        case UserInputEvent::EventTypes::MIDDLE_BUTTON_DOWN:
+          system->pushEvent(
+              std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                    GHOST_kEventButtonDown,
+                                    window,
+                                    GHOST_kButtonMaskMiddle,
+                                    tablet_data));
+          break;
+        case UserInputEvent::EventTypes::MIDDLE_BUTTON_UP:
+          system->pushEvent(
+              std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                    GHOST_kEventButtonUp,
+                                    window,
+                                    GHOST_kButtonMaskMiddle,
+                                    tablet_data));
+          break;
         case UserInputEvent::EventTypes::PENCIL_TAP:
           /* Simulate clicking with the right mouse button. */
           system->pushEvent(
@@ -601,64 +697,56 @@ typedef struct UserInputEvent {
   return NO;
 }
 
-/* Override touch methods to capture the UITouch object. */
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
-{
-  [super touchesBegan:touches withEvent:event];
-
-  for (UITouch *touch in touches) {
-    if (touch.type == UITouchTypePencil) {
-      current_pencil_touch = touch;
-
-      /* Set tablet data immediately so that the first button-down event
-       * carries correct stylus information (is_motion_absolute = true).
-       * Without this, the button-down arrives as EVT_TABLET_NONE which
-       * causes Blender to enter mouse-mode for the drag, while subsequent
-       * cursor-move events switch to tablet-mode — the mismatch makes
-       * transforms/panel drags revert on release. */
-      tablet_data.Active = GHOST_kTabletModeStylus;
-      tablet_data.Pressure = touch.force / touch.maximumPossibleForce;
-      CGFloat azimuthAngle = [touch azimuthAngleInView:window->getView()];
-      CGFloat altitudeAngle = [touch altitudeAngle];
-      CGFloat maxTilt = cos(0);
-      tablet_data.Xtilt = sin(azimuthAngle) * cos(altitudeAngle) / maxTilt;
-      tablet_data.Ytilt = -cos(azimuthAngle) * cos(altitudeAngle) / maxTilt;
-      break;
-    }
-  }
-}
-
 /* Get updated tablet data. */
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
   [super touchesMoved:touches withEvent:event];
 
-  /* Check if one of the touches was from a pencil. */
-  if (current_pencil_touch) {
-    /* Iterate through all pencil touches. */
-    for (UITouch *touch in touches) {
-      if (touch.type == UITouchTypePencil) {
-        current_pencil_touch = touch;
+  for (UITouch *touch in touches) {
+    /* Indirect pointer (mouse / trackpad) drag. */
+    if (@available(iOS 13.4, *)) {
+      if (touch.type == UITouchTypeIndirectPointer) {
+        CGPoint loc = [touch locationInView:window->getView()];
+        CGFloat scale = [window->getView() contentScaleFactor];
+        loc.x *= scale;
+        loc.y *= scale;
 
-        tablet_data.Active = GHOST_kTabletModeStylus;
+        mouse_cursor_x = (int32_t)loc.x;
+        mouse_cursor_y = (int32_t)loc.y;
 
-        /* Map apple pessure Range to Blender range: 0.0 (not touching) to 1.0 (full pressure). */
-        tablet_data.Pressure = current_pencil_touch.force /
-                               current_pencil_touch.maximumPossibleForce;
-
-        CGFloat azimuthAngle = [current_pencil_touch azimuthAngleInView:window->getView()];
-        CGFloat altitudeAngle = [current_pencil_touch altitudeAngle];
-
-        /* Calculate the maximum possible tilt (1.0) when altitude is 0. */
-        CGFloat maxTilt = cos(0);
-
-        /* Convert to x and y tilt - range -1.0 (left) to +1.0 (right). */
-        tablet_data.Xtilt = sin(azimuthAngle) * cos(altitudeAngle) / maxTilt;
-        tablet_data.Ytilt = -cos(azimuthAngle) * cos(altitudeAngle) / maxTilt;
-        IOS_INPUT_LOG(
-            @"TABLET: X:%f,Y:%f,P:%f", tablet_data.Xtilt, tablet_data.Ytilt, tablet_data.Pressure);
-        break;
+        system->pushEvent(std::make_unique<GHOST_EventCursor>(system->getMilliSeconds(),
+                                                GHOST_kEventCursorMove,
+                                                window,
+                                                mouse_cursor_x,
+                                                mouse_cursor_y,
+                                                GHOST_TABLET_DATA_NONE));
+        system->notifyExternalEventProcessed();
+        return;
       }
+    }
+
+    /* Apple Pencil pressure and tilt tracking. */
+    if (touch.type == UITouchTypePencil) {
+      current_pencil_touch = touch;
+
+      tablet_data.Active = GHOST_kTabletModeStylus;
+
+      /* Map apple pressure range to Blender range: 0.0 (not touching) to 1.0 (full pressure). */
+      tablet_data.Pressure = current_pencil_touch.force /
+                             current_pencil_touch.maximumPossibleForce;
+
+      CGFloat azimuthAngle = [current_pencil_touch azimuthAngleInView:window->getView()];
+      CGFloat altitudeAngle = [current_pencil_touch altitudeAngle];
+
+      /* Calculate the maximum possible tilt (1.0) when altitude is 0. */
+      CGFloat maxTilt = cos(0);
+
+      /* Convert to x and y tilt - range -1.0 (left) to +1.0 (right). */
+      tablet_data.Xtilt = sin(azimuthAngle) * cos(altitudeAngle) / maxTilt;
+      tablet_data.Ytilt = -cos(azimuthAngle) * cos(altitudeAngle) / maxTilt;
+      IOS_INPUT_LOG(
+          @"TABLET: X:%f,Y:%f,P:%f", tablet_data.Xtilt, tablet_data.Ytilt, tablet_data.Pressure);
+      break;
     }
   }
 }
@@ -668,6 +756,46 @@ typedef struct UserInputEvent {
 {
   [super touchesEnded:touches withEvent:event];
   for (UITouch *touch in touches) {
+    /* Indirect pointer (mouse / trackpad) button release. */
+    if (@available(iOS 13.4, *)) {
+      if (touch.type == UITouchTypeIndirectPointer) {
+        CGPoint loc = [touch locationInView:window->getView()];
+        CGFloat scale = [window->getView() contentScaleFactor];
+        loc.x *= scale;
+        loc.y *= scale;
+
+        mouse_cursor_x = (int32_t)loc.x;
+        mouse_cursor_y = (int32_t)loc.y;
+
+        system->pushEvent(std::make_unique<GHOST_EventCursor>(system->getMilliSeconds(),
+                                                GHOST_kEventCursorMove,
+                                                window,
+                                                mouse_cursor_x,
+                                                mouse_cursor_y,
+                                                GHOST_TABLET_DATA_NONE));
+
+        /* Release buttons that were held (left / right).
+         * Middle button is handled via GCMouse. */
+        if (mouse_buttons_held & UIEventButtonMaskPrimary) {
+          system->pushEvent(std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                                  GHOST_kEventButtonUp,
+                                                  window,
+                                                  GHOST_kButtonMaskLeft,
+                                                  GHOST_TABLET_DATA_NONE));
+        }
+        if (mouse_buttons_held & UIEventButtonMaskSecondary) {
+          system->pushEvent(std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                                  GHOST_kEventButtonUp,
+                                                  window,
+                                                  GHOST_kButtonMaskRight,
+                                                  GHOST_TABLET_DATA_NONE));
+        }
+        mouse_buttons_held = 0;
+        system->notifyExternalEventProcessed();
+        return;
+      }
+    }
+
     if (touch.type == UITouchTypePencil) {
       current_pencil_touch = nil;
       tablet_data = GHOST_TABLET_DATA_NONE;
@@ -681,6 +809,29 @@ typedef struct UserInputEvent {
 {
   [super touchesCancelled:touches withEvent:event];
   for (UITouch *touch in touches) {
+    if (@available(iOS 13.4, *)) {
+      if (touch.type == UITouchTypeIndirectPointer) {
+        /* Treat cancellation as release. */
+        if (mouse_buttons_held & UIEventButtonMaskPrimary) {
+          system->pushEvent(std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                                  GHOST_kEventButtonUp,
+                                                  window,
+                                                  GHOST_kButtonMaskLeft,
+                                                  GHOST_TABLET_DATA_NONE));
+        }
+        if (mouse_buttons_held & UIEventButtonMaskSecondary) {
+          system->pushEvent(std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                                  GHOST_kEventButtonUp,
+                                                  window,
+                                                  GHOST_kButtonMaskRight,
+                                                  GHOST_TABLET_DATA_NONE));
+        }
+        mouse_buttons_held = 0;
+        system->notifyExternalEventProcessed();
+        return;
+      }
+    }
+
     if (touch.type == UITouchTypePencil) {
       current_pencil_touch = nil;
       tablet_data = GHOST_TABLET_DATA_NONE;
@@ -984,6 +1135,239 @@ typedef struct UserInputEvent {
                               GHOST_kButtonMaskRight,
                               GHOST_TABLET_DATA_NONE));
   }
+}
+
+#pragma mark - Bluetooth Mouse / Trackpad
+
+/**
+ * Hover recognizer for indirect pointer (mouse / trackpad) — cursor movement without buttons.
+ */
+- (void)handleMouseHover:(UIHoverGestureRecognizer *)sender
+{
+  if (sender.state == UIGestureRecognizerStateBegan ||
+      sender.state == UIGestureRecognizerStateChanged)
+  {
+    CGPoint loc = [sender locationInView:window->getView()];
+    CGFloat scale = [window->getView() contentScaleFactor];
+    loc.x *= scale;
+    loc.y *= scale;
+
+    mouse_cursor_x = (int32_t)loc.x;
+    mouse_cursor_y = (int32_t)loc.y;
+    mouse_cursor_valid = true;
+
+    system->pushEvent(std::make_unique<GHOST_EventCursor>(system->getMilliSeconds(),
+                                            GHOST_kEventCursorMove,
+                                            window,
+                                            mouse_cursor_x,
+                                            mouse_cursor_y,
+                                            GHOST_TABLET_DATA_NONE));
+    system->notifyExternalEventProcessed();
+  }
+}
+
+/**
+ * UIPointerInteractionDelegate — return nil to keep the default system pointer
+ * visible at all times. This ensures the cursor renders above all UI elements
+ * (viewport, panels, menus) like a desktop mouse.
+ */
+- (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction
+                        styleForRegion:(UIPointerRegion *)region API_AVAILABLE(ios(13.4))
+{
+  return nil;
+}
+
+/**
+ * Handle touches that come from an indirect pointer device (mouse / trackpad).
+ * We intercept these in touchesBegan/Moved/Ended and check for UITouchTypeIndirectPointer
+ * combined with the buttonMask on the UIEvent to determine left / right / middle.
+ */
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+  [super touchesBegan:touches withEvent:event];
+
+  for (UITouch *touch in touches) {
+    if (touch.type == UITouchTypePencil) {
+      current_pencil_touch = touch;
+      tablet_data.Active = GHOST_kTabletModeStylus;
+      tablet_data.Pressure = touch.force / touch.maximumPossibleForce;
+      CGFloat azimuthAngle = [touch azimuthAngleInView:window->getView()];
+      CGFloat altitudeAngle = [touch altitudeAngle];
+      CGFloat maxTilt = cos(0);
+      tablet_data.Xtilt = sin(azimuthAngle) * cos(altitudeAngle) / maxTilt;
+      tablet_data.Ytilt = -cos(azimuthAngle) * cos(altitudeAngle) / maxTilt;
+      break;
+    }
+
+    if (@available(iOS 13.4, *)) {
+      if (touch.type == UITouchTypeIndirectPointer) {
+        CGPoint loc = [touch locationInView:window->getView()];
+        CGFloat scale = [window->getView() contentScaleFactor];
+        loc.x *= scale;
+        loc.y *= scale;
+
+        mouse_cursor_x = (int32_t)loc.x;
+        mouse_cursor_y = (int32_t)loc.y;
+        mouse_cursor_valid = true;
+
+        UIEventButtonMask mask = event.buttonMask;
+        mouse_buttons_held = mask;
+
+        /* Move cursor first, then send button down events. */
+        system->pushEvent(std::make_unique<GHOST_EventCursor>(system->getMilliSeconds(),
+                                                GHOST_kEventCursorMove,
+                                                window,
+                                                mouse_cursor_x,
+                                                mouse_cursor_y,
+                                                GHOST_TABLET_DATA_NONE));
+        if (mask & UIEventButtonMaskPrimary) {
+          system->pushEvent(std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                                  GHOST_kEventButtonDown,
+                                                  window,
+                                                  GHOST_kButtonMaskLeft,
+                                                  GHOST_TABLET_DATA_NONE));
+        }
+        if (mask & UIEventButtonMaskSecondary) {
+          system->pushEvent(std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
+                                                  GHOST_kEventButtonDown,
+                                                  window,
+                                                  GHOST_kButtonMaskRight,
+                                                  GHOST_TABLET_DATA_NONE));
+        }
+        /* Middle button is handled via GCMouse — not reliably exposed in
+         * UIEvent.buttonMask on all iPadOS devices. */
+        system->notifyExternalEventProcessed();
+        return;
+      }
+    }
+  }
+}
+
+/**
+ * Set up GCMouse handlers for middle button and scroll wheel.
+ * Left/right buttons are handled via UITouch (UITouchTypeIndirectPointer)
+ * but middle button is only reliably available through GameController.
+ */
+- (void)setupGCMouse:(GCMouse *)mouse API_AVAILABLE(ios(14.0))
+{
+  /* Use __unsafe_unretained since GHOST is compiled without ARC. */
+  __unsafe_unretained typeof(self) weakSelf = self;
+
+  /* --- Middle button for 3D viewport orbit --- */
+  mouse.mouseInput.middleButton.pressedChangedHandler = ^(
+      GCControllerButtonInput *_Nonnull button, float value, BOOL pressed) {
+    typeof(self) strongSelf = weakSelf;
+    if (!strongSelf) {
+      return;
+    }
+
+    if (pressed) {
+      strongSelf->mouse_middle_held = true;
+      /* Send cursor position + middle button down. */
+      if (strongSelf->mouse_cursor_valid) {
+        strongSelf->system->pushEvent(std::make_unique<GHOST_EventCursor>(
+            strongSelf->system->getMilliSeconds(),
+            GHOST_kEventCursorMove,
+            strongSelf->window,
+            strongSelf->mouse_cursor_x,
+            strongSelf->mouse_cursor_y,
+            GHOST_TABLET_DATA_NONE));
+      }
+      strongSelf->system->pushEvent(std::make_unique<GHOST_EventButton>(
+          strongSelf->system->getMilliSeconds(),
+          GHOST_kEventButtonDown,
+          strongSelf->window,
+          GHOST_kButtonMaskMiddle,
+          GHOST_TABLET_DATA_NONE));
+    }
+    else {
+      strongSelf->mouse_middle_held = false;
+      strongSelf->system->pushEvent(std::make_unique<GHOST_EventButton>(
+          strongSelf->system->getMilliSeconds(),
+          GHOST_kEventButtonUp,
+          strongSelf->window,
+          GHOST_kButtonMaskMiddle,
+          GHOST_TABLET_DATA_NONE));
+    }
+    strongSelf->system->notifyExternalEventProcessed();
+  };
+
+  /* --- Mouse movement (delta) for orbit drag while middle button is held --- */
+  mouse.mouseInput.mouseMovedHandler = ^(
+      GCMouseInput *_Nonnull mouseInput, float deltaX, float deltaY) {
+    typeof(self) strongSelf = weakSelf;
+    if (!strongSelf) {
+      return;
+    }
+
+    /* Only track delta-based movement when middle button is held
+     * (no UITouch events are generated for middle-click drag). */
+    if (strongSelf->mouse_middle_held && strongSelf->mouse_cursor_valid) {
+      CGFloat scale = [strongSelf->window->getView() contentScaleFactor];
+      strongSelf->mouse_cursor_x += (int32_t)(deltaX * scale);
+      strongSelf->mouse_cursor_y -= (int32_t)(deltaY * scale); /* Y is inverted. */
+
+      strongSelf->system->pushEvent(std::make_unique<GHOST_EventCursor>(
+          strongSelf->system->getMilliSeconds(),
+          GHOST_kEventCursorMove,
+          strongSelf->window,
+          strongSelf->mouse_cursor_x,
+          strongSelf->mouse_cursor_y,
+          GHOST_TABLET_DATA_NONE));
+      strongSelf->system->notifyExternalEventProcessed();
+    }
+  };
+
+  /* --- Scroll wheel --- */
+  mouse.mouseInput.scroll.valueChangedHandler = ^(
+      GCControllerDirectionPad *_Nonnull dpad, float xValue, float yValue) {
+    typeof(self) strongSelf = weakSelf;
+    if (!strongSelf) {
+      return;
+    }
+
+    /* Convert GCMouse scroll deltas to GHOST wheel events.
+     * Use yValue for vertical zoom; fall back to xValue as vertical
+     * when yValue is zero (some Bluetooth mice only report on xAxis). */
+    float vertical = yValue;
+    float horizontal = xValue;
+    if (fabsf(yValue) < 0.001f && fabsf(xValue) > 0.001f) {
+      /* Only horizontal reported — treat as vertical scroll (zoom). */
+      vertical = xValue;
+      horizontal = 0.0f;
+    }
+
+    if (fabsf(vertical) > 0.001f) {
+      int32_t ticks = (vertical > 0) ? 1 : -1;
+      strongSelf->system->pushEvent(std::make_unique<GHOST_EventWheel>(
+          strongSelf->system->getMilliSeconds(),
+          strongSelf->window,
+          GHOST_kEventWheelAxisVertical,
+          ticks));
+    }
+    if (fabsf(horizontal) > 0.001f) {
+      int32_t ticks = (horizontal > 0) ? 1 : -1;
+      strongSelf->system->pushEvent(std::make_unique<GHOST_EventWheel>(
+          strongSelf->system->getMilliSeconds(),
+          strongSelf->window,
+          GHOST_kEventWheelAxisHorizontal,
+          ticks));
+    }
+    strongSelf->system->notifyExternalEventProcessed();
+  };
+}
+
+- (void)mouseDidConnect:(NSNotification *)notification API_AVAILABLE(ios(14.0))
+{
+  GCMouse *mouse = notification.object;
+  if (mouse) {
+    [self setupGCMouse:mouse];
+  }
+}
+
+- (void)mouseDidDisconnect:(NSNotification *)notification API_AVAILABLE(ios(14.0))
+{
+  /* Nothing to clean up — the GCMouse is deallocated by the system. */
 }
 
 - (void)beginFrame
