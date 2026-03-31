@@ -169,9 +169,13 @@ elseif(APPLE AND NOT WITH_GHOST_X11)
       list(APPEND SRC
         intern/GHOST_SystemIOS.hh
         intern/GHOST_WindowIOS.hh
+        intern/GHOST_FilePickerIOS.hh
+        intern/GHOST_WindowIOS_Internal.h
 
         intern/GHOST_SystemIOS.mm
         intern/GHOST_WindowIOS.mm
+        intern/GHOST_KeyboardIOS.mm
+        intern/GHOST_FilePickerIOS.mm
 
         intern/GHOST_ContextIOS.mm
         intern/GHOST_ContextIOS.hh

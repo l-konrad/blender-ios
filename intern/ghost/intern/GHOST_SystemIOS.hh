@@ -32,8 +32,6 @@ class GHOST_WindowIOS;
 @end
 #endif
 
-GHOST_TKey convertKey(int rawCode, uint16_t recvChar, uint16_t /*keyAction*/);
-
 class GHOST_SystemIOS : public GHOST_System {
  public:
   /**
