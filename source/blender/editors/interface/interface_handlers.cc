@@ -3903,10 +3903,8 @@ static void textedit_begin(bContext *C, Button *but, HandleButtonData *data)
   }
 
 #ifdef WITH_APPLE_CROSSPLATFORM
-  /*
-   IOS_FIXME - this seems a long winded way to generate window coords,
-   there must be a better way
-   */
+  /* TODO(iOS IOS-006): Replace this manual window-coord reconstruction with a
+   * UI_but_screen_rect() helper in UI_interface_rect.hh. See doc/ios/known_issues.md. */
   rcti button_pixel_rect;
   ARegion *region = CTX_wm_region(C);
   button_to_pixelrect(&button_pixel_rect, region, but->block, but);
@@ -3915,7 +3913,7 @@ static void textedit_begin(bContext *C, Button *but, HandleButtonData *data)
                       button_pixel_rect.xmax + region->winrct.xmin,
                       button_pixel_rect.ymax + region->winrct.ymin);
 
-  /* IOS_FIXME - Is this the right place to get the font? */
+  /* TODO(iOS IOS-006): Font lookup should come from the same helper (see IOS_001 above). */
   uiFontStyle fstyle = style_get()->widget;
 
   GHOST_KeyboardProperties keyboard_properties;
@@ -3923,7 +3921,7 @@ static void textedit_begin(bContext *C, Button *but, HandleButtonData *data)
                                           GHOST_KeyboardProperties::decimal_numpad_keyboard_type :
                                           GHOST_KeyboardProperties::ascii_keyboard_type;
   keyboard_properties.font_size = fstyle.points;
-  /* IOS_FIXME - get the font colour from some appropriate place.. */
+  /* TODO(iOS IOS-006): Hardcoded font color; resolve from the widget's actual theme color. */
   keyboard_properties.font_color[0] = 1.0f;
   keyboard_properties.font_color[1] = 1.0f;
   keyboard_properties.font_color[2] = 1.0f;
@@ -3974,12 +3972,9 @@ static void textedit_end(bContext *C, Button *but, HandleButtonData *data)
   const char *keyboard_string = ghost_sys_end->getKeyboardInput(
       static_cast<GHOST_IWindow *>(win->runtime->ghostwin));
 
-  /*
-   * IOS_FIXME:
-   * This doesn't seem ideal but dynamically generating keyboard events to modify the
-   * text is tricky on iOS since you also need to take into account cuts, pastes and
-   * any other editing you can do with an iOS keyboard
-   */
+  /* TODO(iOS IOS-004): Bulk-set the button string from the on-screen keyboard's final value
+   * instead of synthesizing key events. The proper fix (IOS-004) is a first-class text-input
+   * event kind that preserves cut/paste/edit semantics. See doc/ios/known_issues.md. */
   if (but) {
     textedit_string_set(but, but->active->text_edit, keyboard_string);
   }

@@ -181,8 +181,8 @@ class FrameBuffer {
       copy_v4_v4_int(viewport_[0], viewport);
       dirty_state_ = true;
 #ifdef WITH_APPLE_CROSSPLATFORM
-      /* IOS_FIXME - selecting 2D Full Canvas window causes a viewport with a -1 origin.
-       Workaround for now. */
+      /* TODO(iOS IOS-003): Selecting the 2D Full Canvas window produces a viewport with a -1
+       * origin; the real fix belongs in the editors layer. See doc/ios/known_issues.md. */
       if (viewport_[0][0] < 0 || viewport_[0][1] < 0) {
         printf("Invalid viewport detected: %d,%d - %dx%d\n",
                viewport_[0][0],

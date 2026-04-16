@@ -5720,7 +5720,8 @@ static wmEventType wm_event_type_from_ghost_key(GHOST_TKey key)
       return EVT_UNKNOWNKEY;
 
 #ifdef WITH_APPLE_CROSSPLATFORM
-      /* IOS_FIXME - Event to get multi text edit events from iOS into Blender */
+      /* TODO(iOS IOS-004): Pipe UITextInput callbacks through the regular event queue instead
+       * of a synthetic key event. See doc/ios/known_issues.md. */
     case GHOST_kKeyTextEdit:
       return EVT_TEXTEDIT;
 

@@ -539,7 +539,9 @@ void MTLBackend::capabilities_init(MTLContext *ctx)
   GCaps.geometry_shader_support = false;
 
 #ifdef WITH_APPLE_CROSSPLATFORM
-  /* IOS_FIXME: Limit parallel compilation for now. */
+  /* TODO(iOS IOS-002): Unlimited concurrent Metal shader compilation triggers jetsam on older
+   * iPads. Fixed cap for now; should be dynamic based on thermal + memory state. See
+   * doc/ios/known_issues.md. */
   GCaps.max_parallel_compilations = 2;
 #else
   /* Compile shaders on performance cores but leave one free so UI is still responsive.

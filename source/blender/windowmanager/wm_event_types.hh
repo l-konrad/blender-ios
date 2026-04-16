@@ -221,7 +221,9 @@ enum wmEventType : int16_t {
   EVT_RIGHTBRACKETKEY = 0x00ec, /* 236 */
 
 #ifdef WITH_APPLE_CROSSPLATFORM
-  /* IOS_FIXME - Hack(?) to get text edit events into system */
+  /* TODO(iOS IOS-004): Temporary event kind for routing UITextInput callbacks from the on-screen
+   * keyboard into the WM. Replace with a first-class wmEvent_TextInput kind. See
+   * doc/ios/known_issues.md. */
   EVT_TEXTEDIT = 0x0fe, /* 254 */
 #endif
 

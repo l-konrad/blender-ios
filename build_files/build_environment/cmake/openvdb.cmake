@@ -46,7 +46,9 @@ set(OPENVDB_EXTRA_ARGS
 )
 
 if(WITH_APPLE_CROSSPLATFORM) 
-  # IOS_FIXME: Think we can remove this now Boost has been removed
+  # TODO(iOS): Verify whether this Boost dylib glob is still required now that Blender has
+  # removed most direct Boost usage. If OpenVDB still links Boost internally we need it;
+  # otherwise drop this block. See doc/ios/known_issues.md.
   file(GLOB Boost_LIBRARIES
     "${LIBDIR}/boost/lib/*.dylib"
   )

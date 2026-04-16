@@ -195,10 +195,9 @@ static void WIDGETGROUP_navigate_setup(const bContext *C, wmGizmoGroup *gzgroup)
           gz->ptr, "draw_options", ED_GIZMO_BUTTON_SHOW_OUTLINE | ED_GIZMO_BUTTON_SHOW_BACKDROP);
     }
 
-    /*
-     IOS_FIXME: This sometimes returns NULL on iOS, stepping into the function in the debugger
-     fixes it. Possible race condition somewhere?
-     */
+    /* TODO(iOS IOS-007): WM_operatortype_find() occasionally returns nullptr on iOS during the
+     * first frame after UIScene restoration. Likely a timing issue in gizmo registration.
+     * See doc/ios/known_issues.md. */
     wmOperatorType *ot = WM_operatortype_find(info->opname, true);
 #ifndef WITH_PYTHON
     if (ot != nullptr)

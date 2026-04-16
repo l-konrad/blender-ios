@@ -241,7 +241,9 @@ endif
 ifndef CROSSCOMPILE_DEPS_INSTALL_DIR
 	#CROSSCOMPILE_DEPS_INSTALL_DIR:=$(shell dirname "$(BLENDER_DIR)")/lib/$(OS_NCASE_CROSSCOMPILE)
 	#CROSSCOMPILE_DEPS_INSTALL_DIR:=$(BLENDER_DIR)/lib/$(OS_NCASE_CROSSCOMPILE)
-	# IOS_FIXME: "macos" should probably not be hardcoded?
+	# TODO(iOS): "macos" is hardcoded as the cross-compile host library directory.
+	# This works because iOS cross-builds always run on macOS hosts, but a cleaner
+	# approach would derive it from the host triple. See doc/ios/known_issues.md.
 	CROSSCOMPILE_DEPS_INSTALL_DIR:=$(BLENDER_DIR)/lib/macos
 
 	# Add processor type to directory name, except for darwin x86_64

@@ -85,7 +85,9 @@ if(WITH_APPLE_CROSSPLATFORM)
   set(CROSSCOMPILE_TOOLDIR "${CMAKE_SOURCE_DIR}/../build_ios/build_darwin_tools/${CMAKE_BUILD_TYPE}")
   # Override the defines that are used for building Blender (make sure they come after CMAKE_ARGS)
   set(CMAKE_TOOLS_ARGS "${CMAKE_ARGS} -DAPPLE_TARGET_DEVICE=macos ${CROSSCOMPILE_C_FLAGS} ${CROSSCOMPILE_CXX_FLAGS}")
-  # IOS_FIXME - Add Cross-Compile defines to the C-Flags
+  # TODO(iOS IOS-001): Cross-Compile defines must reach the host tools' C-flags so their struct
+  # layouts match the target (see BLI_vector.hh `debug_size_`). A cleaner fix is to build host
+  # tools in the same CMAKE_BUILD_TYPE as the target. See doc/ios/known_issues.md.
   # This is a bit of a fudge to make sure that the cross-compiled tools know that we're building
   # in a cross-compile environment in order that all class and struct definitions match (specificially for RNA).
   # Ideally we'd build the tools to the same build-type but DEBUG tools would slow the compile process down.
