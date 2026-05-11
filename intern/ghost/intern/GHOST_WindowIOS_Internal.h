@@ -95,7 +95,7 @@ struct UserInputEvent;
 - (void)generateUserInputEvents:(const UserInputEvent &)event_info;
 - (void)pushIndirectPointerCursorEvent;
 - (void)pushIndirectPointerButtonEvent:(GHOST_TEventType)event_type
-                           buttonMask:(GHOST_TButtonMask)button_mask;
+                           buttonMask:(GHOST_TButton)button_mask;
 - (void)releaseIndirectPointerButtons;
 
 /* Gesture recognizers. */

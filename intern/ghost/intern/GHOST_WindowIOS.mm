@@ -488,7 +488,7 @@ typedef struct UserInputEvent {
                   }
 
                   - (void)pushIndirectPointerButtonEvent:(GHOST_TEventType)event_type
-                                             buttonMask:(GHOST_TButtonMask)button_mask
+                                             buttonMask:(GHOST_TButton)button_mask
                   {
                     system->pushEvent(std::make_unique<GHOST_EventButton>(system->getMilliSeconds(),
                                                             event_type,
