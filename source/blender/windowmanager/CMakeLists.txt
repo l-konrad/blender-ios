@@ -151,6 +151,13 @@ if(WITH_GHOST_CSD)
   add_definitions(-DWITH_GHOST_CSD)
 endif()
 
+if(WITH_APPLE_CROSSPLATFORM)
+  list(APPEND SRC
+    intern/wm_ios_bridge.cc
+    wm_ios_bridge.h
+  )
+endif()
+
 if(WITH_CYCLES)
   add_definitions(-DWITH_CYCLES)
 endif()

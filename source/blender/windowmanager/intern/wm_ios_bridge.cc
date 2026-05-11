@@ -35,7 +35,7 @@ void WM_ios_autosave(void *ghost_context)
   blender::wmWindowManager *wm = blender::CTX_wm_manager(C);
   blender::Main *bmain = blender::CTX_data_main(C);
   if (wm && bmain) {
-    blender::WM_autosave_write(wm, bmain);
+    blender::WM_autosave_write(wm, bmain, &wm->runtime->reports);
   }
 }
 
