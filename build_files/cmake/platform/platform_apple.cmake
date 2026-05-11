@@ -511,7 +511,23 @@ endif()
 find_package(OpenImageIO REQUIRED)
 add_bundled_libraries(openimageio/lib)
 
-find_package(OpenColorIO 2.0.0 REQUIRED CONFIG)
+if(WITH_APPLE_CROSSPLATFORM AND NOT EXISTS "${LIBDIR}/opencolorio/lib/cmake/OpenColorIO/OpenColorIOConfig.cmake")
+  find_path(OPENCOLORIO_INCLUDE_DIRS
+    NAMES OpenColorIO/OpenColorIO.h
+    HINTS ${LIBDIR}/opencolorio/include
+    NO_DEFAULT_PATH
+  )
+  find_library(OPENCOLORIO_LIBRARIES
+    NAMES OpenColorIO libOpenColorIO
+    HINTS ${LIBDIR}/opencolorio/lib
+    NO_DEFAULT_PATH
+  )
+  if(NOT OPENCOLORIO_INCLUDE_DIRS OR NOT OPENCOLORIO_LIBRARIES)
+    message(FATAL_ERROR "OpenColorIO not found in ${LIBDIR}/opencolorio")
+  endif()
+else()
+  find_package(OpenColorIO 2.0.0 REQUIRED CONFIG)
+endif()
 add_bundled_libraries(opencolorio/lib)
 
 if(WITH_OPENVDB)

@@ -90,7 +90,14 @@ endif()
 # -----------------------------------------------------------------------------
 # Configure OpenColorIO
 
-add_library(bf::dependencies::opencolorio ALIAS OpenColorIO::OpenColorIO)
+if(TARGET OpenColorIO::OpenColorIO)
+  add_library(bf::dependencies::opencolorio ALIAS OpenColorIO::OpenColorIO)
+else()
+  add_library(bf_deps_opencolorio INTERFACE)
+  add_library(bf::dependencies::opencolorio ALIAS bf_deps_opencolorio)
+  target_include_directories(bf_deps_opencolorio SYSTEM INTERFACE ${OPENCOLORIO_INCLUDE_DIRS})
+  target_link_libraries(bf_deps_opencolorio INTERFACE ${OPENCOLORIO_LIBRARIES})
+endif()
 
 # -----------------------------------------------------------------------------
 # Configure Zlib
