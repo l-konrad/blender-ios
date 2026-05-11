@@ -199,9 +199,7 @@ static void WIDGETGROUP_navigate_setup(const bContext *C, wmGizmoGroup *gzgroup)
      * first frame after UIScene restoration. Likely a timing issue in gizmo registration.
      * See doc/ios/known_issues.md. */
     wmOperatorType *ot = WM_operatortype_find(info->opname, true);
-#ifndef WITH_PYTHON
     if (ot != nullptr)
-#endif
     {
       PointerRNA *ptr = WM_gizmo_operator_set(gz, 0, ot, nullptr);
       if (info->op_prop_fn != nullptr) {
@@ -212,11 +210,15 @@ static void WIDGETGROUP_navigate_setup(const bContext *C, wmGizmoGroup *gzgroup)
 
   {
     wmGizmo *gz = navgroup->gz_array[GZ_INDEX_CAMERA_OFF];
-    WM_gizmo_operator_set(gz, 0, ot_view_camera, nullptr);
+    if (ot_view_camera != nullptr) {
+      WM_gizmo_operator_set(gz, 0, ot_view_camera, nullptr);
+    }
   }
   {
     wmGizmo *gz = navgroup->gz_array[GZ_INDEX_CAMERA_ON];
-    WM_gizmo_operator_set(gz, 0, ot_view_camera, nullptr);
+    if (ot_view_camera != nullptr) {
+      WM_gizmo_operator_set(gz, 0, ot_view_camera, nullptr);
+    }
   }
 
   /* Click only buttons (not modal). */
@@ -239,7 +241,9 @@ static void WIDGETGROUP_navigate_setup(const bContext *C, wmGizmoGroup *gzgroup)
     for (int i = 0; i < ARRAY_SIZE(gz_ids); i++) {
       wmGizmo *gz = navgroup->gz_array[gz_ids[i]];
       wmGizmoOpElem *gzop = WM_gizmo_operator_get(gz, 0);
-      RNA_boolean_set(&gzop->ptr, "use_cursor_init", false);
+      if (gzop != nullptr && gzop->ptr.data != nullptr) {
+        RNA_boolean_set(&gzop->ptr, "use_cursor_init", false);
+      }
     }
   }
 
@@ -256,8 +260,10 @@ static void WIDGETGROUP_navigate_setup(const bContext *C, wmGizmoGroup *gzgroup)
     };
 
     for (int part_index = 0; part_index < 6; part_index += 1) {
-      PointerRNA *ptr = WM_gizmo_operator_set(gz, part_index + 1, ot_view_axis, nullptr);
-      RNA_enum_set(ptr, "type", mapping[part_index]);
+      if (ot_view_axis != nullptr) {
+        PointerRNA *ptr = WM_gizmo_operator_set(gz, part_index + 1, ot_view_axis, nullptr);
+        RNA_enum_set(ptr, "type", mapping[part_index]);
+      }
     }
 
     /* When dragging an axis, use this instead. */
