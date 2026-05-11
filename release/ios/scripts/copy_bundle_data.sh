@@ -30,18 +30,18 @@ DEST="$BUNDLE_ASSETS/$BLENDER_VERSION"
 mkdir -p "$DEST/datafiles"
 
 # ── Scripts ──────────────────────────────────────────────────────────
-if [ ! -d "$DEST/scripts/startup" ]; then
-  echo "Copying Blender scripts..."
-  rsync -a --exclude='.git' --exclude='__pycache__' --exclude='.gitignore' \
-    --exclude='site' "$SRC_DIR/scripts/" "$DEST/scripts/"
-fi
+# Always refresh so source edits propagate; rsync only updates changed files.
+echo "Syncing Blender scripts..."
+rsync -a --delete-excluded --exclude='.git' --exclude='__pycache__' \
+  --exclude='.gitignore' --exclude='site' \
+  "$SRC_DIR/scripts/" "$DEST/scripts/"
 
 # ── Cycles addon (lives outside scripts/, installed via delayed_install) ──
-if [ ! -d "$DEST/scripts/addons_core/cycles" ]; then
-  echo "Copying Cycles addon..."
-  mkdir -p "$DEST/scripts/addons_core/cycles"
-  cp -f "$SRC_DIR/intern/cycles/blender/addon/"*.py "$DEST/scripts/addons_core/cycles/"
-fi
+# Always refresh: the addon source changes frequently, and a stale bundled
+# properties.py causes RNA_*_get failures at runtime.
+echo "Syncing Cycles addon..."
+mkdir -p "$DEST/scripts/addons_core/cycles"
+cp -f "$SRC_DIR/intern/cycles/blender/addon/"*.py "$DEST/scripts/addons_core/cycles/"
 
 # ── Cycles kernel sources (needed for Metal JIT compilation) ──────────
 if [ ! -d "$DEST/scripts/addons_core/cycles/source" ]; then
