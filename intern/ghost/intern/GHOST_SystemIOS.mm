@@ -362,7 +362,16 @@ GHOST_IWindow *GHOST_SystemIOS::createWindow(const char *title,
     CGRect bounds = CGRectMake(0, 0, 1024, 768);
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
       if ([scene isKindOfClass:[UIWindowScene class]]) {
-        bounds = ((UIWindowScene *)scene).screen.bounds;
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        if (@available(iOS 26.0, *)) {
+          bounds = windowScene.effectiveGeometry.coordinateSpace.bounds;
+        }
+        else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+          bounds = windowScene.coordinateSpace.bounds;
+#pragma clang diagnostic pop
+        }
         break;
       }
     }

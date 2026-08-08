@@ -14,6 +14,7 @@
 #include "GHOST_EventDragnDrop.hh"
 
 #include <memory>
+#include <cmath>
 #include "GHOST_EventTouch.hh"
 #include "GHOST_EventTrackpad.hh"
 #include "GHOST_EventWheel.hh"
@@ -1298,6 +1299,57 @@ typedef struct UserInputEvent {
 
 @end
 
+static UIWindowScene *ghost_ios_active_window_scene()
+{
+  for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+    if ([scene isKindOfClass:[UIWindowScene class]]) {
+      return (UIWindowScene *)scene;
+    }
+  }
+  return nil;
+}
+
+static CGRect ghost_ios_window_scene_bounds(UIWindowScene *windowScene)
+{
+  if (windowScene) {
+    if (@available(iOS 26.0, *)) {
+      return windowScene.effectiveGeometry.coordinateSpace.bounds;
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return windowScene.coordinateSpace.bounds;
+#pragma clang diagnostic pop
+  }
+  return CGRectMake(0, 0, 1024, 768);
+}
+
+static int32_t ghost_ios_round_to_int(CGFloat value)
+{
+  return int32_t(std::lround(value));
+}
+
+static CGFloat ghost_ios_window_scale(UIWindow *window, UIView *view)
+{
+  if (view.contentScaleFactor > 0) {
+    return view.contentScaleFactor;
+  }
+  if (window.screen.scale > 0) {
+    return window.screen.scale;
+  }
+  return 1.0;
+}
+
+static GHOSTUIWindow *ghost_ios_window_create(UIWindowScene *windowScene)
+{
+  if (windowScene) {
+    return [[GHOSTUIWindow alloc] initWithWindowScene:windowScene];
+  }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  return [[GHOSTUIWindow alloc] init];
+#pragma clang diagnostic pop
+}
+
 GHOST_WindowIOS::GHOST_WindowIOS(GHOST_SystemIOS *systemIos,
                                  const char *title,
                                  int32_t left,
@@ -1308,43 +1360,42 @@ GHOST_WindowIOS::GHOST_WindowIOS(GHOST_SystemIOS *systemIos,
                                  GHOST_TDrawingContextType type,
                                  const GHOST_ContextParams &context_params,
                                  bool /*is_debug*/,
-                                 bool /*is_dialog*/,
+                                 bool is_dialog,
                                  GHOST_WindowIOS *parentWindow)
     : GHOST_Window(width, height, state, context_params, false), m_metalView(nil)
 {
-  full_screen_ = false;
+  full_screen_ = (parentWindow == nullptr) && !is_dialog;
   m_systemIOS = systemIos;
   /* Parent window will be the window that focus is returned to upon close. */
   parent_window_ = parentWindow;
   m_window_title = nullptr;
 
+  UIWindowScene *windowScene = ghost_ios_active_window_scene();
+  const CGRect initial_frame = full_screen_ ? ghost_ios_window_scene_bounds(windowScene) :
+                                             CGRectMake(left, bottom, width, height);
+
   /* Create MTKView. */
-  m_metalView = [[MTKView alloc] initWithFrame:CGRectMake(left, bottom, width, height)];
+  m_metalView = [[MTKView alloc] initWithFrame:initial_frame];
   [m_metalView retain];
   GHOST_ASSERT(m_metalView, "metalview not valid");
 
   /* Create view controller. */
-  UIApplication *app = [UIApplication sharedApplication];
-  GHOST_ASSERT(app, "App not valid");
-  id<UIApplicationDelegate> app_delegate = [app delegate];
-  GHOST_ASSERT(app_delegate, "App not valid");
+  GHOST_ASSERT([UIApplication sharedApplication], "App not valid");
+  GHOST_ASSERT([[UIApplication sharedApplication] delegate], "App not valid");
 
   GHOSTUIWindow *ghost_rootWindow = nullptr;
 
   if (full_screen_) {
-    /* Init window at native res. */
-    ghost_rootWindow = [[GHOSTUIWindow alloc] init];
+    /* Init the main window in the active scene's coordinate space. */
+    ghost_rootWindow = ghost_ios_window_create(windowScene);
     [ghost_rootWindow retain];
-    /* Ensure fullscreen. */
-    UIWindowScene *windowScene = (UIWindowScene *)[UIApplication sharedApplication].connectedScenes.allObjects.firstObject;
-    CGRect rect = windowScene ? windowScene.screen.bounds : CGRectMake(0, 0, 1024, 768);
-    rootWindow.frame = rect;
+    ghost_rootWindow.frame = initial_frame;
   }
   else {
     /* Init window at specified size. */
-    ghost_rootWindow = [[GHOSTUIWindow alloc]
-        initWithFrame:CGRectMake(left, bottom, width, height)];
+    ghost_rootWindow = ghost_ios_window_create(windowScene);
     [ghost_rootWindow retain];
+    ghost_rootWindow.frame = initial_frame;
     [ghost_rootWindow setClipsToBounds:YES];
   }
 
@@ -1365,7 +1416,7 @@ GHOST_WindowIOS::GHOST_WindowIOS(GHOST_SystemIOS *systemIos,
     m_uiview_controller.modalPresentationStyle = UIModalPresentationFullScreen;
   }
   else {
-    /* Initial window has no parent and is always fullscreen. */
+    /* Dialogs and temporary windows should not replace the main app surface. */
     m_uiview_controller.modalPresentationStyle = UIModalPresentationPageSheet;
   }
   rootWindow.rootViewController = m_uiview_controller;
@@ -1374,6 +1425,8 @@ GHOST_WindowIOS::GHOST_WindowIOS(GHOST_SystemIOS *systemIos,
   GHOST_ASSERT(width > 0 && height > 0, "invalid wh");
   m_uiview = m_uiview_controller.view;
   GHOST_ASSERT(m_uiview, "uiview not valid");
+
+  setNativePixelSize();
 
   /* Initialize Metal device. */
   m_metalView.device = MTLCreateSystemDefaultDevice();
@@ -1553,29 +1606,23 @@ void GHOST_WindowIOS::getWindowBounds(GHOST_Rect &bounds) const
 {
   GHOST_ASSERT(getValid(), "GHOST_WindowIOS::getWindowBounds(): window invalid");
 
-  CGRect screenRect = rootWindow.frame;
-  CGFloat scale = rootWindow.screen.scale;
-  CGFloat screenWidth = screenRect.size.width * scale;
-  CGFloat screenHeight = screenRect.size.height * scale;
+  const CGRect windowFrame = rootWindow.frame;
 
-  bounds.b_ = screenHeight;
-  bounds.l_ = rootWindow.frame.origin.x;
-  bounds.r_ = screenWidth;
-  bounds.t_ = rootWindow.frame.origin.y;
+  bounds.b_ = ghost_ios_round_to_int(windowFrame.origin.y + windowFrame.size.height);
+  bounds.l_ = ghost_ios_round_to_int(windowFrame.origin.x);
+  bounds.r_ = ghost_ios_round_to_int(windowFrame.origin.x + windowFrame.size.width);
+  bounds.t_ = ghost_ios_round_to_int(windowFrame.origin.y);
 }
 
 void GHOST_WindowIOS::getClientBounds(GHOST_Rect &bounds) const
 {
   GHOST_ASSERT(getValid(), "GHOST_WindowIOS::getWindowBounds(): window invalid");
 
-  CGRect screenRect = rootWindow.frame;
-  CGFloat scale = rootWindow.screen.scale;
-  CGFloat screenWidth = screenRect.size.width * scale;
-  CGFloat screenHeight = screenRect.size.height * scale;
+  const CGRect viewBounds = m_metalView.bounds;
 
-  bounds.b_ = screenHeight;
+  bounds.b_ = ghost_ios_round_to_int(viewBounds.size.height);
   bounds.l_ = 0;
-  bounds.r_ = screenWidth;
+  bounds.r_ = ghost_ios_round_to_int(viewBounds.size.width);
   bounds.t_ = 0;
 }
 
@@ -1638,7 +1685,18 @@ void GHOST_WindowIOS::clientToScreenIntern(int32_t inX,
 }
 
 /* called for event, when window leaves monitor to another */
-void GHOST_WindowIOS::setNativePixelSize(void) {}
+void GHOST_WindowIOS::setNativePixelSize(void)
+{
+  const CGRect viewBounds = m_metalView.bounds;
+  const CGSize drawableSize = m_metalView.drawableSize;
+
+  if (viewBounds.size.width > 0 && drawableSize.width > 0) {
+    native_pixel_size_ = float(drawableSize.width / viewBounds.size.width);
+    return;
+  }
+
+  native_pixel_size_ = float(ghost_ios_window_scale(rootWindow, m_metalView));
+}
 
 /**
  * \note Fullscreen switch is not actual fullscreen with display capture.
@@ -1753,16 +1811,8 @@ GHOST_TSuccess GHOST_WindowIOS::setWindowCustomCursorShape(const uint8_t * /*bit
 
 uint16_t GHOST_WindowIOS::getDPIHint()
 {
-  /* Use the standard 96 DPI convention (same as Windows/Linux baseline) scaled
-   * by the screen's native scale factor. Since iOS coordinates in GHOST are
-   * already in native pixels (getClientBounds multiplies by screen.scale),
-   * this produces correct UI scaling: on a @2x iPad the effective DPI becomes
-   * 192 which maps to pixelsize=2 and scale_factor=2.0. */
-  CGFloat scale = rootWindow.screen.scale;
-  if (scale <= 0) {
-    scale = 2.0;
-  }
-  return (uint16_t)(96.0 * scale);
+  /* The native scale factor is reported separately via getNativePixelSize(). */
+  return 96;
 }
 
 GHOST_TSuccess GHOST_WindowIOS::popupOnscreenKeyboard(

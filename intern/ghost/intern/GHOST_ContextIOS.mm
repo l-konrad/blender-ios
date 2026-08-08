@@ -19,6 +19,8 @@
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 
+#include <cmath>
+
 bool GHOST_ContextIOS::current_drawable_presented = false;
 id<CAMetalDrawable> GHOST_ContextIOS::prevDrawable = nil;
 
@@ -341,11 +343,16 @@ void GHOST_ContextIOS::metalUpdateFramebuffer()
   size_t height = 0;
 
   if ([NSThread isMainThread]) {
-    UIScreen *screen = m_metalView.window.windowScene.screen ?: [UIScreen mainScreen];
-    CGRect screenRect = screen.bounds;
-    CGFloat scaling_fac = screen.scale;
-    width = (size_t)(screenRect.size.width * scaling_fac);
-    height = (size_t)(screenRect.size.height * scaling_fac);
+    CGSize drawableSize = m_metalView.drawableSize;
+    if (drawableSize.width <= 0 || drawableSize.height <= 0) {
+      const CGRect viewBounds = m_metalView.bounds;
+      const CGFloat scale = m_metalView.contentScaleFactor > 0 ? m_metalView.contentScaleFactor :
+                                                              [UIScreen mainScreen].scale;
+      drawableSize = CGSizeMake(viewBounds.size.width * scale, viewBounds.size.height * scale);
+    }
+
+    width = (size_t)std::lround(drawableSize.width);
+    height = (size_t)std::lround(drawableSize.height);
     /* Cache for background thread use. */
     cached_width = width;
     cached_height = height;
