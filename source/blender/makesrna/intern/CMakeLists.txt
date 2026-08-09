@@ -416,6 +416,7 @@ target_link_libraries(makesrna PRIVATE bf::dependencies::optional::openvdb)
 target_link_libraries(makesrna PRIVATE bf::dependencies::optional::tbb)
 target_link_libraries(makesrna PRIVATE bf::dependencies::pthreads)
 target_link_libraries(makesrna PRIVATE bf::dependencies::fmt)
+endif()
 
 # Output `rna_*_gen.cc`.
 # NOTE: (Linux only): with crashes try add this after COMMAND:
