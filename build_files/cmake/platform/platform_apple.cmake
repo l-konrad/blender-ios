@@ -67,10 +67,12 @@ if(WITH_APPLE_CROSSPLATFORM)
     else()
       if(CACHE_VAR_TYPE STREQUAL "BOOL")
         # Remove IPAD arg
-        if(NOT CACHE_VAR STREQUAL "APPLE_TARGET_DEVICE" AND NOT CACHE_VAR STREQUAL "WITH_CROSSCOMPILED_TOOLS" AND NOT CACHE_VAR STREQUAL "WITH_APPLE_CROSSPLATFORM")
+        if(NOT CACHE_VAR STREQUAL "APPLE_TARGET_DEVICE" AND NOT CACHE_VAR STREQUAL "WITH_CROSSCOMPILED_TOOLS" AND NOT CACHE_VAR STREQUAL "WITH_APPLE_CROSSPLATFORM" AND NOT CACHE_VAR STREQUAL "WITH_DRACO" AND NOT CACHE_VAR STREQUAL "WITH_MESHOPTIMIZER")
           set(CMAKE_ARGS "${CMAKE_ARGS} -D${CACHE_VAR}=${${CACHE_VAR}}")
         else()
-          # Disable iPad for tools compilation
+          # Disable iPad for tools compilation.
+          # Host tools (makesdna, makesrna, datatoc, shader_tool) never need
+          # draco/meshoptimizer, and the macos_arm64 prebuilt libs may not have them.
           set(CMAKE_ARGS "${CMAKE_ARGS} -D${CACHE_VAR}=OFF")
         endif()
       endif()
