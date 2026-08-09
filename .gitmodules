@@ -22,4 +22,4 @@
 	update = none
 	path = lib/ios_arm64
 	url = https://projects.blender.org/blender/lib-ios_arm64.git
-	branch = blender-v5.2-release
+	branch = main
