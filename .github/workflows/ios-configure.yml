@@ -9,25 +9,38 @@ concurrency:
 
 jobs:
   build:
+    name: Blender iPad IPA
     runs-on: macos-15
     timeout-minutes: 180
 
     steps:
-      - name: Checkout Salmazov
+      # ------------------------------------------------------------
+      # Checkout Salmazov ios-new
+      # ------------------------------------------------------------
+
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           lfs: false
           submodules: false
 
-      - name: Show environment
+      - name: Environment
         run: |
+          set -eux
+
+          sudo xcode-select -s /Applications/Xcode.app
+
           uname -a
           uname -m
           sw_vers
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           df -h
+
+      # ------------------------------------------------------------
+      # Make room: Blender + prebuilt libraries are large
+      # ------------------------------------------------------------
 
       - name: Free disk space
         run: |
@@ -38,103 +51,313 @@ jobs:
           sudo rm -rf /usr/local/.ghcup || true
           sudo rm -rf /Library/Developer/CoreSimulator/Profiles || true
           sudo xcrun simctl delete all 2>/dev/null || true
+
           df -h
 
-      - name: Install build tools
+      # ------------------------------------------------------------
+      # Tools
+      # ------------------------------------------------------------
+
+      - name: Install tools
         run: |
           brew install cmake git-lfs
           git lfs install
+
           cmake --version
           git lfs version
 
-      # Salmazov's fork is itself a Blender fork, and some source assets
-      # such as startup.blend are Git-LFS objects.
-      - name: Fetch required Blender source LFS assets
+      # ------------------------------------------------------------
+      # Blender source LFS files.
+      #
+      # IMPORTANT:
+      # Fetch from official Blender upstream, NOT the GitHub fork's
+      # LFS endpoint.
+      # ------------------------------------------------------------
+
+      - name: Fetch Blender source LFS assets
         run: |
+          set -euxo pipefail
+
           git config lfs.remote.searchall true
 
           git remote add blender-lfs \
             https://projects.blender.org/blender/blender.git \
             2>/dev/null || true
 
+          git remote set-url \
+            blender-lfs \
+            https://projects.blender.org/blender/blender.git
+
           git lfs fetch blender-lfs \
-            --include="release/datafiles/startup.blend"
+            --include="release/datafiles/*" \
+            2>&1 | tee source-lfs.log
 
-          git lfs checkout release/datafiles/startup.blend
+          git lfs checkout release/datafiles
 
-          file release/datafiles/startup.blend
-          ls -lh release/datafiles/startup.blend
+          echo "Data files:"
+          ls -lh release/datafiles/startup.blend || true
+          ls -lh release/datafiles/preview.blend || true
+          ls -lh release/datafiles/preview_grease_pencil.blend || true
+          ls -lh release/datafiles/splash.png || true
 
-      # Fetch exactly the library revisions pinned by Salmazov ios-new.
-      - name: Initialize prebuilt library repositories
+      # ------------------------------------------------------------
+      # Determine EXACT dependency revisions pinned by Salmazov
+      # ------------------------------------------------------------
+
+      - name: Get library revisions
+        id: libs
+        run: |
+          IOS_SHA="$(git rev-parse HEAD:lib/ios_arm64)"
+          MAC_SHA="$(git rev-parse HEAD:lib/macos_arm64)"
+
+          echo "ios=$IOS_SHA" >> "$GITHUB_OUTPUT"
+          echo "mac=$MAC_SHA" >> "$GITHUB_OUTPUT"
+
+          echo "Pinned iOS libs:   $IOS_SHA"
+          echo "Pinned macOS libs: $MAC_SHA"
+
+      # ------------------------------------------------------------
+      # Cache libraries
+      # ------------------------------------------------------------
+
+      - name: Restore iOS libraries cache
+        id: ios-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            lib/ios_arm64
+            .git/modules/lib/ios_arm64
+          key: ios-arm64-${{ steps.libs.outputs.ios }}-v1
+
+      - name: Restore macOS libraries cache
+        id: mac-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            lib/macos_arm64
+            .git/modules/lib/macos_arm64
+          key: macos-arm64-${{ steps.libs.outputs.mac }}-v1
+
+      # ------------------------------------------------------------
+      # Fetch actual lib-ios_arm64 submodule.
+      #
+      # Salmazov has:
+      #   update = none
+      #
+      # so explicitly override it with checkout.
+      # ------------------------------------------------------------
+
+      - name: Fetch iOS prebuilt libraries
+        if: steps.ios-cache.outputs.cache-hit != 'true'
         env:
           GIT_LFS_SKIP_SMUDGE: "1"
         run: |
-          git submodule sync --recursive
+          set -euxo pipefail
+
+          git submodule init lib/ios_arm64
+
+          git config \
+            submodule.lib/ios_arm64.update \
+            checkout
 
           GIT_LFS_SKIP_SMUDGE=1 \
-            git submodule update --init --depth 1 lib/ios_arm64
+            git submodule update \
+              --checkout \
+              lib/ios_arm64
 
-          GIT_LFS_SKIP_SMUDGE=1 \
-            git submodule update --init --depth 1 lib/macos_arm64
+          echo "=== iOS repository root ==="
 
-          echo "iOS libs commit:"
+          IOS_ROOT="$(
+            git -C lib/ios_arm64 \
+              rev-parse --show-toplevel
+          )"
+
+          echo "$IOS_ROOT"
+
+          test "$IOS_ROOT" = \
+            "$GITHUB_WORKSPACE/lib/ios_arm64"
+
+          echo "=== iOS remote ==="
+          git -C lib/ios_arm64 remote -v
+
+          echo "=== iOS revision ==="
           git -C lib/ios_arm64 rev-parse HEAD
 
-          echo "macOS libs commit:"
-          git -C lib/macos_arm64 rev-parse HEAD
+          EXPECTED="${{ steps.libs.outputs.ios }}"
+          ACTUAL="$(
+            git -C lib/ios_arm64 rev-parse HEAD
+          )"
 
-      - name: Fetch iOS prebuilt libraries
-        run: |
-          set -o pipefail
+          test "$ACTUAL" = "$EXPECTED"
 
-          git -C lib/ios_arm64 lfs install --local
+          git -C lib/ios_arm64 \
+            lfs install --local
 
-          git -C lib/ios_arm64 lfs pull 2>&1 | tee ios-lfs.log
+          echo "=== iOS LFS environment ==="
+          git -C lib/ios_arm64 lfs env
 
-          test -f lib/ios_arm64/python/lib/libpython3.11.a
+          echo "=== Downloading iOS LFS ==="
 
-          echo "iOS libraries fetched successfully"
+          git -C lib/ios_arm64 \
+            lfs pull \
+            2>&1 | tee ios-lfs.log
+
+          echo "=== Verify iOS libraries ==="
+
+          test -f \
+            lib/ios_arm64/python/lib/libpython3.11.a
+
+          ls -lh \
+            lib/ios_arm64/python/lib/libpython3.11.a
+
           du -sh lib/ios_arm64
 
+      # ------------------------------------------------------------
+      # Fetch macOS host libraries.
+      # These contain tools/Python required by cross compilation.
+      # ------------------------------------------------------------
+
       - name: Fetch macOS host libraries
+        if: steps.mac-cache.outputs.cache-hit != 'true'
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
         run: |
-          set -o pipefail
+          set -euxo pipefail
 
-          git -C lib/macos_arm64 lfs install --local
+          git submodule init lib/macos_arm64
 
-          git -C lib/macos_arm64 lfs pull 2>&1 | tee macos-lfs.log
+          git config \
+            submodule.lib/macos_arm64.update \
+            checkout
+
+          GIT_LFS_SKIP_SMUDGE=1 \
+            git submodule update \
+              --checkout \
+              lib/macos_arm64
+
+          echo "=== macOS repository root ==="
+
+          MAC_ROOT="$(
+            git -C lib/macos_arm64 \
+              rev-parse --show-toplevel
+          )"
+
+          echo "$MAC_ROOT"
+
+          test "$MAC_ROOT" = \
+            "$GITHUB_WORKSPACE/lib/macos_arm64"
+
+          echo "=== macOS remote ==="
+          git -C lib/macos_arm64 remote -v
+
+          echo "=== macOS revision ==="
+          git -C lib/macos_arm64 rev-parse HEAD
+
+          EXPECTED="${{ steps.libs.outputs.mac }}"
+          ACTUAL="$(
+            git -C lib/macos_arm64 rev-parse HEAD
+          )"
+
+          test "$ACTUAL" = "$EXPECTED"
+
+          git -C lib/macos_arm64 \
+            lfs install --local
+
+          echo "=== macOS LFS environment ==="
+          git -C lib/macos_arm64 lfs env
+
+          echo "=== Downloading macOS LFS ==="
+
+          git -C lib/macos_arm64 \
+            lfs pull \
+            2>&1 | tee macos-lfs.log
+
+          du -sh lib/macos_arm64
+
+      # ------------------------------------------------------------
+      # Verify even when restored from cache
+      # ------------------------------------------------------------
+
+      - name: Verify prebuilt libraries
+        run: |
+          set -eux
+
+          test -f \
+            lib/ios_arm64/python/lib/libpython3.11.a
 
           HOST_PYTHON="$(
             find lib/macos_arm64/python/bin \
+              -type f \
               -name 'python3.*' \
               -not -name '*config*' \
               -print -quit
           )"
 
           if [ -z "$HOST_PYTHON" ]; then
-            echo "macOS host Python missing"
+            echo "ERROR: macOS host Python not found"
             exit 1
           fi
 
-          echo "Host Python: $HOST_PYTHON"
+          echo "iOS Python:"
+          ls -lh \
+            lib/ios_arm64/python/lib/libpython3.11.a
+
+          echo "Host Python:"
+          echo "$HOST_PYTHON"
+
+          echo "Library sizes:"
+          du -sh lib/ios_arm64
           du -sh lib/macos_arm64
 
-      # Pull only Shlok's source tree and copy the two TouchView pieces.
+      # ------------------------------------------------------------
+      # Save dependency caches after successful download
+      # ------------------------------------------------------------
+
+      - name: Save iOS libraries cache
+        if: steps.ios-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            lib/ios_arm64
+            .git/modules/lib/ios_arm64
+          key: ios-arm64-${{ steps.libs.outputs.ios }}-v1
+
+      - name: Save macOS libraries cache
+        if: steps.mac-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            lib/macos_arm64
+            .git/modules/lib/macos_arm64
+          key: macos-arm64-${{ steps.libs.outputs.mac }}-v1
+
+      # ------------------------------------------------------------
+      # Add TouchView from Shlok
+      # ------------------------------------------------------------
+
       - name: Add Shlok TouchView
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
         run: |
-          git clone \
-            --depth 1 \
-            --filter=blob:none \
-            --sparse \
-            https://github.com/Shlok-Bhakta/blender-ios-build.git \
-            /tmp/shlok
+          set -eux
 
-          git -C /tmp/shlok sparse-checkout set \
-            scripts/addons_core/touchview \
-            scripts/startup/touchview_ios_startup.py
+          rm -rf /tmp/shlok
 
-          rm -rf scripts/addons_core/touchview
+          GIT_LFS_SKIP_SMUDGE=1 \
+            git clone \
+              --depth 1 \
+              --filter=blob:none \
+              --sparse \
+              https://github.com/Shlok-Bhakta/blender-ios-build.git \
+              /tmp/shlok
+
+          git -C /tmp/shlok \
+            sparse-checkout set \
+              scripts/addons_core/touchview \
+              scripts/startup/touchview_ios_startup.py
+
+          rm -rf \
+            scripts/addons_core/touchview
 
           cp -R \
             /tmp/shlok/scripts/addons_core/touchview \
@@ -144,20 +367,36 @@ jobs:
             /tmp/shlok/scripts/startup/touchview_ios_startup.py \
             scripts/startup/touchview_ios_startup.py
 
-          echo "TouchView files:"
-          find scripts/addons_core/touchview -maxdepth 2 -type f | head -30
+          echo "=== TouchView add-on ==="
+          find \
+            scripts/addons_core/touchview \
+            -maxdepth 2 \
+            -type f \
+            | head -50
 
-          echo "Auto-start script:"
-          cat scripts/startup/touchview_ios_startup.py
+          echo "=== TouchView auto-start ==="
+          cat \
+            scripts/startup/touchview_ios_startup.py
 
-      - name: Configure Blender for physical iPad
+      # ------------------------------------------------------------
+      # Configure exactly as an iOS DEVICE build
+      # ------------------------------------------------------------
+
+      - name: Configure Blender for iPad
         run: |
-          rm -rf build_ios
-          mkdir build_ios
+          set -euxo pipefail
 
-          IOS_LIBDIR="$PWD/lib/ios_arm64"
-          IOS_SDK_ROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
-          IOS_DEV_ROOT="$(dirname "$IOS_SDK_ROOT")"
+          rm -rf build_ios
+
+          IOS_LIBDIR="$GITHUB_WORKSPACE/lib/ios_arm64"
+
+          IOS_SDK_ROOT="$(
+            xcrun --sdk iphoneos --show-sdk-path
+          )"
+
+          IOS_DEV_ROOT="$(
+            dirname "$IOS_SDK_ROOT"
+          )"
 
           cmake \
             -S . \
@@ -167,17 +406,26 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DWITH_APPLE_CROSSPLATFORM=ON \
             -DAPPLE_TARGET_DEVICE=ios \
-            -DCMAKE_FIND_ROOT_PATH="$IOS_DEV_ROOT;$(dirname "$IOS_DEV_ROOT");$IOS_LIBDIR"
+            -DCMAKE_FIND_ROOT_PATH="$IOS_DEV_ROOT;$(dirname "$IOS_DEV_ROOT");$IOS_LIBDIR" \
+            2>&1 | tee configure.log
 
-      - name: Show Xcode targets
+      - name: List Xcode targets
         run: |
           xcodebuild \
             -project build_ios/Blender.xcodeproj \
             -list
 
-      - name: Build Blender for iPad
+      # ------------------------------------------------------------
+      # Build real-device arm64 Blender
+      # ------------------------------------------------------------
+
+      - name: Build Blender for physical iPad
         run: |
-          NCPU="$(sysctl -n hw.ncpu)"
+          set -o pipefail
+
+          NCPU="$(
+            sysctl -n hw.ncpu
+          )"
 
           xcodebuild \
             -project build_ios/Blender.xcodeproj \
@@ -186,65 +434,109 @@ jobs:
             -sdk iphoneos \
             -jobs "$NCPU" \
             ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build \
             2>&1 | tee xcodebuild.log
 
-      - name: Locate Blender.app
+      # ------------------------------------------------------------
+      # Locate generated Blender.app
+      # ------------------------------------------------------------
+
+      - name: Find Blender.app
         run: |
-          APP="$(
+          set -eux
+
+          if [ -d \
+            "build_ios/bin/Release/Blender.app" ]; then
+
+            APP="$GITHUB_WORKSPACE/build_ios/bin/Release/Blender.app"
+
+          else
+
+            APP="$(
+              find "$GITHUB_WORKSPACE/build_ios" \
+                -type d \
+                -name 'Blender.app' \
+                -print -quit
+            )"
+
+          fi
+
+          if [ -z "${APP:-}" ] || \
+             [ ! -d "$APP" ]; then
+
+            echo "ERROR: Blender.app not found"
+
             find build_ios \
               -type d \
-              -name 'Blender.app' \
-              -print -quit
-          )"
+              -name '*.app' \
+              -print || true
 
-          if [ -z "$APP" ]; then
-            echo "ERROR: Blender.app was not produced."
-            find build_ios -type d -name '*.app' -print
             exit 1
           fi
 
           echo "APP=$APP" >> "$GITHUB_ENV"
 
-          echo "Found Blender at:"
+          echo "Found:"
           echo "$APP"
 
           du -sh "$APP"
 
-      - name: Verify TouchView was bundled
+      # ------------------------------------------------------------
+      # Ensure TouchView actually made it into the .app
+      # ------------------------------------------------------------
+
+      - name: Verify TouchView in Blender.app
         run: |
-          echo "Searching packaged app for TouchView..."
+          set -eux
+
+          echo "=== TouchView files inside app ==="
 
           find "$APP" \
-            \( -iname '*touchview*' \
-            -o -name 'touchview_ios_startup.py' \) \
-            -print | head -50
+            \( \
+              -iname '*touchview*' \
+              -o \
+              -name 'touchview_ios_startup.py' \
+            \) \
+            -print \
+            | head -100
 
-          COUNT="$(
+          STARTUP_COUNT="$(
             find "$APP" \
               -name 'touchview_ios_startup.py' \
               | wc -l \
               | tr -d ' '
           )"
 
-          if [ "$COUNT" = "0" ]; then
-            echo "ERROR: TouchView startup script was not copied into Blender.app"
+          if [ "$STARTUP_COUNT" = "0" ]; then
+            echo "ERROR: TouchView auto-start script was not packaged"
             exit 1
           fi
 
+      # ------------------------------------------------------------
+      # Package standard unsigned IPA:
+      #
+      # Payload/
+      #   Blender.app/
+      # ------------------------------------------------------------
+
       - name: Package unsigned IPA
         run: |
-          rm -rf ipa
-          mkdir -p ipa/Payload
+          set -eux
+
+          rm -rf package
+
+          mkdir -p \
+            package/Payload
 
           ditto \
             "$APP" \
-            ipa/Payload/Blender.app
+            package/Payload/Blender.app
 
-          cd ipa
+          cd package
 
           zip \
             -qry \
@@ -254,29 +546,44 @@ jobs:
 
           cd ..
 
-          ls -lh Blender-5.2-iPad-TouchView.ipa
+          ls -lh \
+            Blender-5.2-iPad-TouchView.ipa
 
-          unzip -l Blender-5.2-iPad-TouchView.ipa \
+          echo "=== IPA TouchView verification ==="
+
+          unzip -l \
+            Blender-5.2-iPad-TouchView.ipa \
             | grep -i touchview \
-            | head -30
+            | head -50
 
-      - name: Upload IPA
+      # ------------------------------------------------------------
+      # Download this artifact when finished
+      # ------------------------------------------------------------
+
+      - name: Upload Blender IPA
         uses: actions/upload-artifact@v4
         with:
           name: Blender-5.2-iPad-TouchView
           path: Blender-5.2-iPad-TouchView.ipa
           retention-days: 30
 
-      - name: Upload build logs if something fails
+      # ------------------------------------------------------------
+      # Debug logs
+      # ------------------------------------------------------------
+
+      - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: blender-ios-build-logs
+          name: blender-ipad-build-logs
           path: |
+            source-lfs.log
             ios-lfs.log
             macos-lfs.log
+            configure.log
             xcodebuild.log
             build_ios/CMakeCache.txt
             build_ios/**/*.log
+            build_ios/**/*.txt
           if-no-files-found: ignore
           retention-days: 7
