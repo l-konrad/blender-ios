@@ -1,791 +1,105 @@
-name: Build Blender iOS - Cycles OFF
-
-on:
-  workflow_dispatch:
-
-concurrency:
-  group: blender-ios-cycles-off-${{ github.ref }}
-  cancel-in-progress: true
-
-jobs:
-  build:
-    name: Blender iOS
-    runs-on: macos-15
-    timeout-minutes: 180
-
-    steps:
-      # ============================================================
-      # 1. CHECKOUT SALMAZOV DIRECTLY
-      #
-      # IMPORTANT:
-      # Do not use the short SHA "ccd09fe".
-      # Checkout the real upstream ios-new branch.
-      # ============================================================
-
-      - name: Checkout Salmazov ios-new
-        uses: actions/checkout@v5
-        with:
-          repository: salmazov/blender-ios
-          ref: ios-new
-          fetch-depth: 1
-          lfs: false
-          submodules: false
-          persist-credentials: false
-
-      # ============================================================
-      # 2. SHOW EXACT SOURCE REVISION
-      #
-      # If this build succeeds, this full SHA is what we can pin
-      # later for fully reproducible builds.
-      # ============================================================
-
-      - name: Show source revision
-        run: |
-          set -eux
-
-          echo "========================================"
-          echo "SALMAZOV IOS-NEW REVISION"
-          echo "========================================"
-
-          git rev-parse HEAD
-          git log -1 --oneline
-
-          FULL_SHA="$(git rev-parse HEAD)"
-
-          echo "BLENDER_SOURCE_SHA=$FULL_SHA" >> "$GITHUB_ENV"
-
-          echo
-          echo "Full SHA:"
-          echo "$FULL_SHA"
-
-      # ============================================================
-      # 3. ENVIRONMENT
-      # ============================================================
-
-      - name: Show build environment
-        run: |
-          set -eux
-
-          sudo xcode-select -s /Applications/Xcode.app
-
-          echo "===== macOS ====="
-          sw_vers
-
-          echo
-          echo "===== CPU ====="
-          uname -m
-
-          echo
-          echo "===== Xcode ====="
-          xcodebuild -version
-
-          echo
-          echo "===== iPhoneOS SDK ====="
-          xcrun --sdk iphoneos --show-sdk-version
-          xcrun --sdk iphoneos --show-sdk-path
-
-          echo
-          echo "===== Disk ====="
-          df -h
-
-      # ============================================================
-      # 4. FREE DISK SPACE
-      # ============================================================
-
-      - name: Free disk space
-        run: |
-          set -eux
-
-          sudo rm -rf /usr/local/lib/android || true
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf ~/Library/Android || true
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf /usr/local/.ghcup || true
-          sudo rm -rf /Library/Developer/CoreSimulator/Profiles || true
-
-          sudo xcrun simctl delete all 2>/dev/null || true
-
-          df -h
-
-      # ============================================================
-      # 5. INSTALL BUILD TOOLS
-      # ============================================================
-
-      - name: Install build tools
-        run: |
-          set -eux
-
-          brew install cmake git-lfs
-
-          git lfs install
-
-          echo "===== CMake ====="
-          cmake --version
-
-          echo
-          echo "===== Git LFS ====="
-          git lfs version
-
-          echo
-          echo "===== Python ====="
-          python3 --version
-
-      # ============================================================
-      # 6. FETCH startup.blend FROM OFFICIAL BLENDER LFS
-      #
-      # Salmazov's GitHub repository does not necessarily host
-      # Blender's LFS objects itself.
-      # ============================================================
-
-      - name: Fetch Blender startup.blend
-        run: |
-          set -euxo pipefail
-
-          git remote add blender-lfs \
-            https://projects.blender.org/blender/blender.git \
-            2>/dev/null || true
-
-          git remote set-url \
-            blender-lfs \
-            https://projects.blender.org/blender/blender.git
-
-          git config lfs.remote.searchall true
-
-          git lfs fetch \
-            blender-lfs \
-            --include="release/datafiles/startup.blend" \
-            2>&1 | tee source-lfs.log
-
-          git lfs checkout \
-            release/datafiles/startup.blend
-
-          test -f \
-            release/datafiles/startup.blend
-
-          SIZE="$(
-            stat -f '%z' \
-              release/datafiles/startup.blend
-          )"
-
-          echo
-          echo "startup.blend size: $SIZE"
-
-          if [ "$SIZE" -lt 1024 ]; then
-            echo "ERROR: startup.blend is still an LFS pointer"
-            exit 1
-          fi
-
-          file \
-            release/datafiles/startup.blend
-
-      # ============================================================
-      # 7. DETERMINE EXACT LIBRARY COMMITS
-      #
-      # These come from the gitlinks stored in Salmazov's exact
-      # ios-new source revision.
-      # ============================================================
-
-      - name: Determine prebuilt library revisions
-        id: libs
-        run: |
-          set -eux
-
-          IOS_SHA="$(
-            git rev-parse HEAD:lib/ios_arm64
-          )"
-
-          MAC_SHA="$(
-            git rev-parse HEAD:lib/macos_arm64
-          )"
-
-          IOS_URL="$(
-            git config \
-              -f .gitmodules \
-              --get submodule.lib/ios_arm64.url
-          )"
-
-          MAC_URL="$(
-            git config \
-              -f .gitmodules \
-              --get submodule.lib/macos_arm64.url
-          )"
-
-          echo "ios_sha=$IOS_SHA" >> "$GITHUB_OUTPUT"
-          echo "mac_sha=$MAC_SHA" >> "$GITHUB_OUTPUT"
-          echo "ios_url=$IOS_URL" >> "$GITHUB_OUTPUT"
-          echo "mac_url=$MAC_URL" >> "$GITHUB_OUTPUT"
-
-          echo "========================================"
-          echo "PINNED PREBUILT LIBRARIES"
-          echo "========================================"
-
-          echo
-          echo "iOS:"
-          echo "  URL: $IOS_URL"
-          echo "  SHA: $IOS_SHA"
-
-          echo
-          echo "macOS:"
-          echo "  URL: $MAC_URL"
-          echo "  SHA: $MAC_SHA"
-
-      # ============================================================
-      # 8. CACHE IOS PREBUILT LIBRARIES
-      #
-      # actions/cache@v5 automatically restores at the start and
-      # saves after the job when the key was not present.
-      # ============================================================
-
-      - name: Cache iOS libraries
-        id: ios-cache
-        uses: actions/cache@v5
-        with:
-          path: lib/ios_arm64
-          key: blender-ios-arm64-${{ steps.libs.outputs.ios_sha }}-v1
-
-      # ============================================================
-      # 9. CACHE MACOS HOST LIBRARIES
-      # ============================================================
-
-      - name: Cache macOS libraries
-        id: mac-cache
-        uses: actions/cache@v5
-        with:
-          path: lib/macos_arm64
-          key: blender-macos-arm64-${{ steps.libs.outputs.mac_sha }}-v1
-
-      # ============================================================
-      # 10. FETCH IOS LIBRARIES WHEN CACHE MISSES
-      # ============================================================
-
-      - name: Fetch iOS prebuilt libraries
-        if: steps.ios-cache.outputs.cache-hit != 'true'
-        env:
-          GIT_LFS_SKIP_SMUDGE: "1"
-        run: |
-          set -euxo pipefail
-
-          rm -rf \
-            lib/ios_arm64
-
-          git clone \
-            --filter=blob:none \
-            --no-checkout \
-            "${{ steps.libs.outputs.ios_url }}" \
-            lib/ios_arm64
-
-          git -C lib/ios_arm64 \
-            fetch \
-            --depth 1 \
-            origin \
-            "${{ steps.libs.outputs.ios_sha }}"
-
-          git -C lib/ios_arm64 \
-            checkout \
-            --detach \
-            FETCH_HEAD
-
-          ACTUAL="$(
-            git -C lib/ios_arm64 \
-              rev-parse HEAD
-          )"
-
-          EXPECTED="${{ steps.libs.outputs.ios_sha }}"
-
-          echo "Actual:   $ACTUAL"
-          echo "Expected: $EXPECTED"
-
-          test "$ACTUAL" = "$EXPECTED"
-
-          git -C lib/ios_arm64 \
-            lfs install --local
-
-          git -C lib/ios_arm64 \
-            lfs pull \
-            2>&1 | tee ios-lfs.log
-
-          echo
-          echo "===== iOS library size ====="
-
-          du -sh \
-            lib/ios_arm64
-
-      # ============================================================
-      # 11. FETCH MACOS HOST LIBRARIES WHEN CACHE MISSES
-      # ============================================================
-
-      - name: Fetch macOS host libraries
-        if: steps.mac-cache.outputs.cache-hit != 'true'
-        env:
-          GIT_LFS_SKIP_SMUDGE: "1"
-        run: |
-          set -euxo pipefail
-
-          rm -rf \
-            lib/macos_arm64
-
-          git clone \
-            --filter=blob:none \
-            --no-checkout \
-            "${{ steps.libs.outputs.mac_url }}" \
-            lib/macos_arm64
-
-          git -C lib/macos_arm64 \
-            fetch \
-            --depth 1 \
-            origin \
-            "${{ steps.libs.outputs.mac_sha }}"
-
-          git -C lib/macos_arm64 \
-            checkout \
-            --detach \
-            FETCH_HEAD
-
-          ACTUAL="$(
-            git -C lib/macos_arm64 \
-              rev-parse HEAD
-          )"
-
-          EXPECTED="${{ steps.libs.outputs.mac_sha }}"
-
-          echo "Actual:   $ACTUAL"
-          echo "Expected: $EXPECTED"
-
-          test "$ACTUAL" = "$EXPECTED"
-
-          git -C lib/macos_arm64 \
-            lfs install --local
-
-          git -C lib/macos_arm64 \
-            lfs pull \
-            2>&1 | tee macos-lfs.log
-
-          echo
-          echo "===== macOS library size ====="
-
-          du -sh \
-            lib/macos_arm64
-
-      # ============================================================
-      # 12. VERIFY LIBRARIES
-      # ============================================================
-
-      - name: Verify prebuilt libraries
-        run: |
-          set -eux
-
-          echo "===== Check iOS Python ====="
-
-          test -f \
-            lib/ios_arm64/python/lib/libpython3.11.a
-
-          ls -lh \
-            lib/ios_arm64/python/lib/libpython3.11.a
-
-          echo
-          echo "===== Check macOS host Python ====="
-
-          HOST_PYTHON="$(
-            find \
-              lib/macos_arm64/python/bin \
-              -type f \
-              -name 'python3.*' \
-              -not -name '*config*' \
-              -print -quit
-          )"
-
-          if [ -z "$HOST_PYTHON" ]; then
-            echo "ERROR: macOS host Python was not found"
-            exit 1
-          fi
-
-          echo "$HOST_PYTHON"
-
-          echo
-          echo "===== Sizes ====="
-
-          du -sh \
-            lib/ios_arm64
-
-          du -sh \
-            lib/macos_arm64
-
-      # ============================================================
-      # 13. CONFIGURE
-      #
-      # THIS IS THE ONLY BLENDER FEATURE CHANGE:
-      #
-      #   WITH_CYCLES=OFF
-      #
-      # No TouchView.
-      # No fmt override.
-      # No C/C++ patches.
-      # Python remains whatever ios-new defaults to.
-      # ============================================================
-
-      - name: Configure Blender for iOS
-        run: |
-          set -euxo pipefail
-
-          rm -rf \
-            build_ios
-
-          IOS_LIBDIR="$GITHUB_WORKSPACE/lib/ios_arm64"
-
-          IOS_SDK_ROOT="$(
-            xcrun \
-              --sdk iphoneos \
-              --show-sdk-path
-          )"
-
-          IOS_DEV_ROOT="$(
-            dirname "$IOS_SDK_ROOT"
-          )"
-
-          echo "========================================"
-          echo "CONFIGURE IOS BUILD"
-          echo "========================================"
-
-          echo
-          echo "SDK:"
-          echo "$IOS_SDK_ROOT"
-
-          echo
-          echo "LIBDIR:"
-          echo "$IOS_LIBDIR"
-
-          cmake \
-            -S . \
-            -B build_ios \
-            -G Xcode \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DWITH_APPLE_CROSSPLATFORM=ON \
-            -DAPPLE_TARGET_DEVICE=ios \
-            -DWITH_CYCLES=OFF \
-            -DCMAKE_FIND_ROOT_PATH="$IOS_DEV_ROOT;$(dirname "$IOS_DEV_ROOT");$IOS_LIBDIR" \
-            2>&1 | tee configure.log
-
-      # ============================================================
-      # 14. VERIFY CONFIGURATION
-      # ============================================================
-
-      - name: Verify Cycles is disabled
-        run: |
-          set -eux
-
-          echo "===== Important CMake values ====="
-
-          grep -E \
-            'WITH_CYCLES:|WITH_PYTHON:|WITH_AUDASPACE:|WITH_METAL_BACKEND:' \
-            build_ios/CMakeCache.txt \
-            || true
-
-          CYCLES="$(
-            grep '^WITH_CYCLES:BOOL=' \
-              build_ios/CMakeCache.txt \
-              | cut -d= -f2
-          )"
-
-          echo
-          echo "WITH_CYCLES=$CYCLES"
-
-          if [ "$CYCLES" != "OFF" ]; then
-            echo "ERROR: WITH_CYCLES is not OFF"
-            exit 1
-          fi
-
-          echo
-          echo "Cycles successfully disabled."
-
-      # ============================================================
-      # 15. LIST XCODE TARGETS
-      # ============================================================
-
-      - name: List Xcode targets
-        run: |
-          xcodebuild \
-            -project build_ios/Blender.xcodeproj \
-            -list
-
-      # ============================================================
-      # 16. BUILD PHYSICAL IOS ARM64 BLENDER
-      #
-      # Keep full Xcode output in xcodebuild.log.
-      # Print only useful diagnostics on failure.
-      # ============================================================
-
-      - name: Build Blender for physical iOS
-        run: |
-          set -o pipefail
-
-          NCPU="$(
-            sysctl -n hw.ncpu
-          )"
-
-          echo "========================================"
-          echo "BUILD BLENDER"
-          echo "========================================"
-
-          echo "Build jobs: $NCPU"
-
-          set +e
-
-          xcodebuild \
-            -project build_ios/Blender.xcodeproj \
-            -scheme blender \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -jobs "$NCPU" \
-            ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=YES \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build \
-            > xcodebuild.log 2>&1
-
-          STATUS=$?
-
-          set -e
-
-          if [ "$STATUS" -ne 0 ]; then
-
-            echo
-            echo "========================================"
-            echo "BLENDER BUILD FAILED"
-            echo "========================================"
-            echo
-
-            echo "===== Compiler / linker errors ====="
-
-            grep -n -C 15 \
-              -E \
-              '(^|[[:space:]])error:|fatal error:|static assertion failed|Undefined symbols|duplicate symbol|ld: |clang: error:' \
-              xcodebuild.log \
-              > compiler-errors.txt \
-              || true
-
-            cat \
-              compiler-errors.txt \
-              || true
-
-            echo
-            echo "===== Failed build commands ====="
-
-            grep -n -A 100 \
-              'The following build commands failed:' \
-              xcodebuild.log \
-              > failed-commands.txt \
-              || true
-
-            cat \
-              failed-commands.txt \
-              || true
-
-            echo
-            echo "===== Last 300 lines ====="
-
-            tail -300 \
-              xcodebuild.log \
-              || true
-
-            exit "$STATUS"
-          fi
-
-          echo
-          echo "========================================"
-          echo "BLENDER BUILD SUCCEEDED"
-          echo "========================================"
-
-          tail -80 \
-            xcodebuild.log
-
-      # ============================================================
-      # 17. LOCATE Blender.app
-      # ============================================================
-
-      - name: Find Blender.app
-        run: |
-          set -eux
-
-          APP="$(
-            find \
-              "$GITHUB_WORKSPACE/build_ios" \
-              -type d \
-              -name 'Blender.app' \
-              -print -quit
-          )"
-
-          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
-
-            echo "ERROR: Blender.app not found"
-
-            echo
-            echo "===== All generated apps ====="
-
-            find \
-              build_ios \
-              -type d \
-              -name '*.app' \
-              -print \
-              || true
-
-            exit 1
-          fi
-
-          echo "APP=$APP" \
-            >> "$GITHUB_ENV"
-
-          echo
-          echo "===== Blender.app ====="
-
-          echo "$APP"
-
-          du -sh \
-            "$APP"
-
-      # ============================================================
-      # 18. VERIFY APPLICATION
-      # ============================================================
-
-      - name: Verify Blender executable
-        run: |
-          set -eux
-
-          test -f \
-            "$APP/Info.plist"
-
-          EXEC_NAME="$(
-            /usr/libexec/PlistBuddy \
-              -c 'Print :CFBundleExecutable' \
-              "$APP/Info.plist"
-          )"
-
-          EXECUTABLE="$APP/$EXEC_NAME"
-
-          echo "===== CFBundleExecutable ====="
-          echo "$EXEC_NAME"
-
-          test -f \
-            "$EXECUTABLE"
-
-          echo
-          echo "===== Binary ====="
-
-          file \
-            "$EXECUTABLE"
-
-          echo
-          echo "===== Architecture ====="
-
-          lipo -info \
-            "$EXECUTABLE" \
-            || true
-
-      # ============================================================
-      # 19. PACKAGE UNSIGNED IPA
-      # ============================================================
-
-      - name: Package unsigned IPA
-        run: |
-          set -eux
-
-          rm -rf \
-            package
-
-          mkdir -p \
-            package/Payload
-
-          ditto \
-            "$APP" \
-            package/Payload/Blender.app
-
-          cd package
-
-          zip \
-            -qry \
-            -y \
-            ../Blender-ios-new-Cycles-OFF.ipa \
-            Payload
-
-          cd ..
-
-          echo
-          echo "===== IPA ====="
-
-          ls -lh \
-            Blender-ios-new-Cycles-OFF.ipa
-
-          echo
-          echo "===== IPA root ====="
-
-          unzip -l \
-            Blender-ios-new-Cycles-OFF.ipa \
-            | head -50
-
-      # ============================================================
-      # 20. WRITE BUILD REVISION INFORMATION
-      # ============================================================
-
-      - name: Write build revision
-        if: always()
-        run: |
-          {
-            echo "Source repository:"
-            echo "https://github.com/salmazov/blender-ios"
-            echo
-            echo "Branch:"
-            echo "ios-new"
-            echo
-            echo "Source commit:"
-            git rev-parse HEAD 2>/dev/null || true
-            echo
-            echo "iOS libraries:"
-            git -C lib/ios_arm64 rev-parse HEAD 2>/dev/null || true
-            echo
-            echo "macOS libraries:"
-            git -C lib/macos_arm64 rev-parse HEAD 2>/dev/null || true
-            echo
-            echo "Build option:"
-            echo "WITH_CYCLES=OFF"
-          } > build-revision.txt
-
-          cat \
-            build-revision.txt
-
-      # ============================================================
-      # 21. UPLOAD IPA
-      # ============================================================
-
-      - name: Upload Blender IPA
-        if: success()
-        uses: actions/upload-artifact@v6
-        with:
-          name: Blender-ios-new-Cycles-OFF
-          path: |
-            Blender-ios-new-Cycles-OFF.ipa
-            build-revision.txt
-          retention-days: 30
-
-      # ============================================================
-      # 22. ALWAYS UPLOAD LOGS
-      # ============================================================
-
-      - name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: blender-ios-build-logs
-          path: |
-            build-revision.txt
-            source-lfs.log
-            ios-lfs.log
-            macos-lfs.log
-            configure.log
-            xcodebuild.log
-            compiler-errors.txt
-            failed-commands.txt
-            build_ios/CMakeCache.txt
-          if-no-files-found: ignore
-          retention-days: 7
+- name: Patch Blender 5.2 BundleKey fmt compatibility
+  run: |
+    set -euxo pipefail
+
+    python3 <<'PY'
+    from pathlib import Path
+
+    # ============================================================
+    # 1. Join Bundle node error message
+    # ============================================================
+
+    p = Path(
+        "source/blender/nodes/geometry/nodes/"
+        "node_geo_join_bundle.cc"
+    )
+
+    text = p.read_text()
+
+    old = '''    std::string message = fmt::format(
+        "{}: {}", TIP_("Duplicate keys"), fmt::join(overridden_keys, ", "));'''
+
+    new = '''    std::string duplicate_keys;
+    for (const BundleKey &key : overridden_keys) {
+      if (!duplicate_keys.empty()) {
+        duplicate_keys += ", ";
+      }
+      const auto key_ref = key.ustr().ref();
+      duplicate_keys.append(key_ref.data(), key_ref.size());
+    }
+
+    std::string message = fmt::format(
+        "{}: {}", TIP_("Duplicate keys"), duplicate_keys);'''
+
+    if old not in text:
+        raise SystemExit(
+            "ERROR: expected node_geo_join_bundle.cc code not found"
+        )
+
+    text = text.replace(old, new, 1)
+    p.write_text(text)
+
+    print("Patched:", p)
+
+    # ============================================================
+    # 2. Bundle path formatting
+    #
+    # This is the second BundleKey fmt::join incompatibility we
+    # already encountered in an earlier build.
+    # ============================================================
+
+    p = Path(
+        "source/blender/nodes/intern/"
+        "geometry_nodes_bundle.cc"
+    )
+
+    text = p.read_text()
+
+    old = '''  return fmt::format("{}", fmt::join(path, "/"));'''
+
+    new = '''  std::string result;
+  for (const BundleKey &key : path) {
+    if (!result.empty()) {
+      result += '/';
+    }
+    const auto key_ref = key.ustr().ref();
+    result.append(key_ref.data(), key_ref.size());
+  }
+  return result;'''
+
+    if old not in text:
+        raise SystemExit(
+            "ERROR: expected geometry_nodes_bundle.cc code not found"
+        )
+
+    text = text.replace(old, new, 1)
+    p.write_text(text)
+
+    print("Patched:", p)
+    PY
+
+    echo
+    echo "===== Verify problematic joins are gone ====="
+
+    if grep -RIn \
+      'fmt::join(overridden_keys' \
+      source/blender/nodes
+    then
+      echo "ERROR: overridden_keys fmt::join still exists"
+      exit 1
+    fi
+
+    if grep -RIn \
+      'fmt::join(path, "/")' \
+      source/blender/nodes
+    then
+      echo "ERROR: BundleKey path fmt::join still exists"
+      exit 1
+    fi
+
+    echo
+    echo "===== Patch ====="
+
+    git diff -- \
+      source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
+      source/blender/nodes/intern/geometry_nodes_bundle.cc
