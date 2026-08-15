@@ -1,76 +1,218 @@
-name: Build Blender iOS - Fixed
+name: Build Blender iOS - Xcode 26.3
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: blender-ios-fixed-${{ github.ref }}
+  group: blender-ios-xcode26-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Blender iOS
+    name: Blender iOS - Xcode 26.3
     runs-on: macos-15
     timeout-minutes: 180
 
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
     steps:
       # ============================================================
-      # 1. CHECKOUT SALMAZOV
+      # 1. CHECKOUT THE EXACT BLENDER SOURCE WE HAVE BEEN TESTING
+      #
+      # Important:
+      # use the full 40-character commit, not the short SHA.
       # ============================================================
 
-      - name: Checkout Salmazov ios-new
+      - name: Checkout pinned Salmazov Blender iOS
         uses: actions/checkout@v6
         with:
           repository: salmazov/blender-ios
-          ref: ios-new
+          ref: 1e391616fea93b759ac5ad73cdbbbcb7f2fa08e6
           fetch-depth: 1
           lfs: false
           submodules: false
           persist-credentials: false
 
       # ============================================================
-      # 2. FREEZE EXACT SOURCE REVISION
+      # 2. VERIFY SOURCE
       # ============================================================
 
-      - name: Checkout exact Blender source
+      - name: Verify source revision
         run: |
           set -euxo pipefail
 
           EXPECTED="1e391616fea93b759ac5ad73cdbbbcb7f2fa08e6"
-
-          git fetch \
-            origin \
-            "$EXPECTED" \
-            --depth=1
-
-          git checkout \
-            --detach \
-            FETCH_HEAD
-
           ACTUAL="$(git rev-parse HEAD)"
 
+          echo "========================================"
+          echo "BLENDER SOURCE"
+          echo "========================================"
+          echo
           echo "Expected: $EXPECTED"
           echo "Actual:   $ACTUAL"
 
           test "$ACTUAL" = "$EXPECTED"
 
+          echo
           git log -1 --oneline
 
+          echo "BLENDER_SOURCE_SHA=$ACTUAL" >> "$GITHUB_ENV"
+
       # ============================================================
-      # 3. ENVIRONMENT
+      # 3. SELECT XCODE 26.3
+      #
+      # macos-15 defaults to Xcode 16.4, so explicitly select 26.3.
+      # ============================================================
+
+      - name: Select Xcode 26.3
+        run: |
+          set -euxo pipefail
+
+          XCODE="/Applications/Xcode_26.3.app"
+
+          if [ ! -d "$XCODE" ]; then
+            echo "ERROR: Xcode 26.3 is not installed."
+            echo
+            echo "Installed Xcode versions:"
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+
+          sudo xcode-select -s \
+            "$XCODE/Contents/Developer"
+
+          echo "DEVELOPER_DIR=$XCODE/Contents/Developer" \
+            >> "$GITHUB_ENV"
+
+          echo
+          echo "========================================"
+          echo "XCODE"
+          echo "========================================"
+
+          xcodebuild -version
+
+          echo
+          echo "xcode-select:"
+          xcode-select -p
+
+          echo
+          echo "DEVELOPER_DIR:"
+          echo "$DEVELOPER_DIR"
+
+      # ============================================================
+      # 4. VERIFY IOS 26 SDK
+      # ============================================================
+
+      - name: Verify iOS SDK
+        run: |
+          set -euxo pipefail
+
+          SDK_VERSION="$(
+            xcrun \
+              --sdk iphoneos \
+              --show-sdk-version
+          )"
+
+          SDK_PATH="$(
+            xcrun \
+              --sdk iphoneos \
+              --show-sdk-path
+          )"
+
+          echo "========================================"
+          echo "IPHONEOS SDK"
+          echo "========================================"
+
+          echo
+          echo "Version:"
+          echo "$SDK_VERSION"
+
+          echo
+          echo "Path:"
+          echo "$SDK_PATH"
+
+          case "$SDK_VERSION" in
+            26.*)
+              echo
+              echo "Using iOS 26 SDK."
+              ;;
+            *)
+              echo
+              echo "ERROR: Expected iOS 26.x SDK."
+              exit 1
+              ;;
+          esac
+
+          echo "IOS_SDK_VERSION=$SDK_VERSION" \
+            >> "$GITHUB_ENV"
+
+          echo "IOS_SDK_ROOT=$SDK_PATH" \
+            >> "$GITHUB_ENV"
+
+      # ============================================================
+      # 5. PROVE THE NEW UIKIT API EXISTS
+      #
+      # This tests the exact API that failed under Xcode 16.4:
+      #
+      #   scene.effectiveGeometry.coordinateSpace.bounds
+      #
+      # Do this BEFORE spending time compiling Blender.
+      # ============================================================
+
+      - name: Test modern UIWindowScene API
+        run: |
+          set -euxo pipefail
+
+          cat > /tmp/uikit_probe.mm <<'EOF'
+          #import <UIKit/UIKit.h>
+
+          static CGRect blender_scene_bounds(UIWindowScene *scene)
+          {
+            return scene.effectiveGeometry.coordinateSpace.bounds;
+          }
+          EOF
+
+          echo "========================================"
+          echo "UIKIT API PROBE"
+          echo "========================================"
+
+          cat /tmp/uikit_probe.mm
+
+          echo
+          echo "Compiling..."
+
+          SDKROOT="$(
+            xcrun \
+              --sdk iphoneos \
+              --show-sdk-path
+          )"
+
+          xcrun \
+            --sdk iphoneos \
+            clang++ \
+            -x objective-c++ \
+            -fsyntax-only \
+            -isysroot "$SDKROOT" \
+            -miphoneos-version-min=15.0 \
+            /tmp/uikit_probe.mm
+
+          echo
+          echo "Modern UIWindowScene API compiled successfully."
+
+      # ============================================================
+      # 6. ENVIRONMENT INFORMATION
       # ============================================================
 
       - name: Show environment
         run: |
           set -eux
 
-          sudo xcode-select -s /Applications/Xcode.app
-
           echo "===== macOS ====="
           sw_vers
 
           echo
-          echo "===== CPU ====="
+          echo "===== Architecture ====="
           uname -m
 
           echo
@@ -78,49 +220,71 @@ jobs:
           xcodebuild -version
 
           echo
-          echo "===== iPhoneOS SDK ====="
+          echo "===== iPhoneOS ====="
           xcrun --sdk iphoneos --show-sdk-version
           xcrun --sdk iphoneos --show-sdk-path
 
           echo
-          echo "===== Source ====="
-          git rev-parse HEAD
+          echo "===== Git ====="
+          git --version
 
           echo
           echo "===== Disk ====="
           df -h
 
       # ============================================================
-      # 4. FREE DISK SPACE
+      # 7. FREE DISK SPACE
       # ============================================================
 
       - name: Free disk space
         run: |
           set -eux
 
-          sudo rm -rf /usr/local/lib/android || true
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf ~/Library/Android || true
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf /usr/local/.ghcup || true
-          sudo rm -rf /Library/Developer/CoreSimulator/Profiles || true
+          sudo rm -rf \
+            /usr/local/lib/android \
+            || true
 
-          sudo xcrun simctl delete all 2>/dev/null || true
+          sudo rm -rf \
+            /usr/share/dotnet \
+            || true
+
+          sudo rm -rf \
+            ~/Library/Android \
+            || true
+
+          sudo rm -rf \
+            /opt/ghc \
+            || true
+
+          sudo rm -rf \
+            /usr/local/.ghcup \
+            || true
+
+          sudo rm -rf \
+            /Library/Developer/CoreSimulator/Profiles \
+            || true
+
+          sudo xcrun simctl delete all \
+            2>/dev/null \
+            || true
 
           df -h
 
       # ============================================================
-      # 5. INSTALL BUILD TOOLS
+      # 8. INSTALL BUILD TOOLS
       # ============================================================
 
       - name: Install build tools
         run: |
-          set -eux
+          set -euxo pipefail
 
-          brew install cmake git-lfs
+          brew install \
+            cmake \
+            git-lfs
 
           git lfs install
 
+          echo
           echo "===== CMake ====="
           cmake --version
 
@@ -132,23 +296,33 @@ jobs:
           echo "===== Python ====="
           python3 --version
 
+          echo
+          echo "===== Xcode still selected ====="
+          xcodebuild -version
+
       # ============================================================
-      # 6. FETCH startup.blend
+      # 9. FETCH startup.blend
+      #
+      # Fetch the LFS object from official Blender upstream.
       # ============================================================
 
       - name: Fetch startup.blend
         run: |
           set -euxo pipefail
 
-          git remote add blender-lfs \
+          git remote add \
+            blender-lfs \
             https://projects.blender.org/blender/blender.git \
-            2>/dev/null || true
+            2>/dev/null \
+            || true
 
           git remote set-url \
             blender-lfs \
             https://projects.blender.org/blender/blender.git
 
-          git config lfs.remote.searchall true
+          git config \
+            lfs.remote.searchall \
+            true
 
           git lfs fetch \
             blender-lfs \
@@ -162,14 +336,17 @@ jobs:
             release/datafiles/startup.blend
 
           SIZE="$(
-            stat -f '%z' \
+            stat \
+              -f '%z' \
               release/datafiles/startup.blend
           )"
 
-          echo "startup.blend size: $SIZE"
+          echo
+          echo "startup.blend size:"
+          echo "$SIZE bytes"
 
           if [ "$SIZE" -lt 1024 ]; then
-            echo "ERROR: startup.blend is still an LFS pointer"
+            echo "ERROR: startup.blend is still an LFS pointer."
             exit 1
           fi
 
@@ -177,55 +354,72 @@ jobs:
             release/datafiles/startup.blend
 
       # ============================================================
-      # 7. GET EXACT LIBRARY REVISIONS
+      # 10. GET EXACT PREBUILT LIBRARY REVISIONS
       # ============================================================
 
       - name: Determine library revisions
         id: libs
         run: |
-          set -eux
+          set -euxo pipefail
 
           IOS_SHA="$(
-            git rev-parse HEAD:lib/ios_arm64
+            git rev-parse \
+              HEAD:lib/ios_arm64
           )"
 
           MAC_SHA="$(
-            git rev-parse HEAD:lib/macos_arm64
+            git rev-parse \
+              HEAD:lib/macos_arm64
           )"
 
           IOS_URL="$(
             git config \
               -f .gitmodules \
-              --get submodule.lib/ios_arm64.url
+              --get \
+              submodule.lib/ios_arm64.url
           )"
 
           MAC_URL="$(
             git config \
               -f .gitmodules \
-              --get submodule.lib/macos_arm64.url
+              --get \
+              submodule.lib/macos_arm64.url
           )"
 
-          echo "ios_sha=$IOS_SHA" >> "$GITHUB_OUTPUT"
-          echo "mac_sha=$MAC_SHA" >> "$GITHUB_OUTPUT"
-          echo "ios_url=$IOS_URL" >> "$GITHUB_OUTPUT"
-          echo "mac_url=$MAC_URL" >> "$GITHUB_OUTPUT"
+          echo "ios_sha=$IOS_SHA" \
+            >> "$GITHUB_OUTPUT"
 
-          echo "===== iOS ====="
+          echo "mac_sha=$MAC_SHA" \
+            >> "$GITHUB_OUTPUT"
+
+          echo "ios_url=$IOS_URL" \
+            >> "$GITHUB_OUTPUT"
+
+          echo "mac_url=$MAC_URL" \
+            >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "========================================"
+          echo "PREBUILT LIBRARIES"
+          echo "========================================"
+
+          echo
+          echo "iOS:"
           echo "$IOS_URL"
           echo "$IOS_SHA"
 
           echo
-          echo "===== macOS ====="
+          echo "macOS:"
           echo "$MAC_URL"
           echo "$MAC_SHA"
 
       # ============================================================
-      # 8. VERIFY KNOWN LIBRARY PINS
+      # 11. VERIFY KNOWN PINS
       # ============================================================
 
       - name: Verify expected library revisions
         run: |
-          set -eux
+          set -euxo pipefail
 
           EXPECTED_IOS="393201c7c8525941553f6a96e19b909d6b3bfc4f"
           EXPECTED_MAC="a3e20428fb0ab2231903608cdca90301e130dbfc"
@@ -233,18 +427,24 @@ jobs:
           ACTUAL_IOS="${{ steps.libs.outputs.ios_sha }}"
           ACTUAL_MAC="${{ steps.libs.outputs.mac_sha }}"
 
-          echo "iOS expected: $EXPECTED_IOS"
-          echo "iOS actual:   $ACTUAL_IOS"
+          echo "iOS expected:"
+          echo "$EXPECTED_IOS"
+
+          echo "iOS actual:"
+          echo "$ACTUAL_IOS"
 
           echo
-          echo "macOS expected: $EXPECTED_MAC"
-          echo "macOS actual:   $ACTUAL_MAC"
+          echo "macOS expected:"
+          echo "$EXPECTED_MAC"
+
+          echo "macOS actual:"
+          echo "$ACTUAL_MAC"
 
           test "$ACTUAL_IOS" = "$EXPECTED_IOS"
           test "$ACTUAL_MAC" = "$EXPECTED_MAC"
 
       # ============================================================
-      # 9. CACHE IOS LIBRARIES
+      # 12. CACHE IOS PREBUILT LIBRARIES
       # ============================================================
 
       - name: Cache iOS libraries
@@ -252,10 +452,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: lib/ios_arm64
-          key: blender-ios-arm64-${{ steps.libs.outputs.ios_sha }}-v3
+          key: blender-ios-arm64-${{ steps.libs.outputs.ios_sha }}-v4
 
       # ============================================================
-      # 10. CACHE MACOS HOST LIBRARIES
+      # 13. CACHE MACOS HOST LIBRARIES
       # ============================================================
 
       - name: Cache macOS libraries
@@ -263,10 +463,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: lib/macos_arm64
-          key: blender-macos-arm64-${{ steps.libs.outputs.mac_sha }}-v3
+          key: blender-macos-arm64-${{ steps.libs.outputs.mac_sha }}-v4
 
       # ============================================================
-      # 11. FETCH IOS LIBRARIES
+      # 14. FETCH IOS LIBRARIES ON CACHE MISS
       # ============================================================
 
       - name: Fetch iOS libraries
@@ -303,13 +503,17 @@ jobs:
               rev-parse HEAD
           )"
 
-          echo "Expected: $EXPECTED"
-          echo "Actual:   $ACTUAL"
+          echo "Expected:"
+          echo "$EXPECTED"
+
+          echo "Actual:"
+          echo "$ACTUAL"
 
           test "$ACTUAL" = "$EXPECTED"
 
           git -C lib/ios_arm64 \
-            lfs install --local
+            lfs install \
+            --local
 
           git -C lib/ios_arm64 \
             lfs pull \
@@ -319,7 +523,7 @@ jobs:
             lib/ios_arm64
 
       # ============================================================
-      # 12. FETCH MACOS LIBRARIES
+      # 15. FETCH MACOS LIBRARIES ON CACHE MISS
       # ============================================================
 
       - name: Fetch macOS libraries
@@ -356,13 +560,17 @@ jobs:
               rev-parse HEAD
           )"
 
-          echo "Expected: $EXPECTED"
-          echo "Actual:   $ACTUAL"
+          echo "Expected:"
+          echo "$EXPECTED"
+
+          echo "Actual:"
+          echo "$ACTUAL"
 
           test "$ACTUAL" = "$EXPECTED"
 
           git -C lib/macos_arm64 \
-            lfs install --local
+            lfs install \
+            --local
 
           git -C lib/macos_arm64 \
             lfs pull \
@@ -372,12 +580,12 @@ jobs:
             lib/macos_arm64
 
       # ============================================================
-      # 13. VERIFY LIBRARIES
+      # 16. VERIFY PREBUILT LIBRARIES
       # ============================================================
 
-      - name: Verify libraries
+      - name: Verify prebuilt libraries
         run: |
-          set -eux
+          set -euxo pipefail
 
           IOS_ACTUAL="$(
             git -C lib/ios_arm64 \
@@ -404,7 +612,7 @@ jobs:
             lib/ios_arm64/python/lib/libpython3.11.a
 
           echo
-          echo "===== Host Python ====="
+          echo "===== macOS host Python ====="
 
           HOST_PYTHON="$(
             find \
@@ -412,18 +620,19 @@ jobs:
               -type f \
               -name 'python3.*' \
               -not -name '*config*' \
-              -print -quit
+              -print \
+              -quit
           )"
 
           if [ -z "$HOST_PYTHON" ]; then
-            echo "ERROR: host Python not found"
+            echo "ERROR: macOS host Python missing."
             exit 1
           fi
 
           echo "$HOST_PYTHON"
 
           echo
-          echo "===== Library sizes ====="
+          echo "===== Sizes ====="
 
           du -sh \
             lib/ios_arm64
@@ -432,28 +641,22 @@ jobs:
             lib/macos_arm64
 
       # ============================================================
-      # 14. APPLY SOURCE COMPATIBILITY FIXES
+      # 17. APPLY ONLY THE TWO KNOWN FMT COMPATIBILITY FIXES
       #
-      # FIX 1:
-      # Old fmt cannot format the BundleKey range.
+      # IMPORTANT:
       #
-      # FIX 2:
-      # Old fmt cannot format the two path ranges.
+      # We are NOT modifying:
       #
-      # FIX 3:
-      # Xcode 16.4 / iOS 18.5 does not provide:
+      #   GHOST_WindowIOS.mm
+      #   GHOST_SystemIOS.mm
       #
-      #   UIWindowSceneGeometry.coordinateSpace
+      # We want Xcode 26.3 to compile Salmazov's modern UIKit code
+      # exactly as written.
       #
-      # Instead of fixing individual files one at a time, replace
-      # every use in the iOS GHOST Objective-C++ implementation.
-      #
-      # NO fmt replacement.
-      # NO CPATH.
-      # NO dependency header replacement.
+      # We also do NOT replace fmt itself.
       # ============================================================
 
-      - name: Apply iOS source compatibility fixes
+      - name: Patch old fmt compatibility
         run: |
           set -euxo pipefail
 
@@ -462,9 +665,11 @@ jobs:
 
 
           # ========================================================
-          # FIX 1
+          # PATCH A
           #
           # node_geo_join_bundle.cc
+          #
+          # fmt::join(overridden_keys, ", ")
           # ========================================================
 
           file1 = Path(
@@ -498,13 +703,13 @@ jobs:
           count = text.count(needle)
 
           print(
-              "BundleKey overridden_keys joins:",
+              "overridden_keys fmt::join occurrences:",
               count,
           )
 
           if count != 1:
               raise SystemExit(
-                  "ERROR: expected exactly 1 "
+                  "ERROR: expected exactly one "
                   "overridden_keys fmt::join; "
                   f"found {count}"
               )
@@ -524,16 +729,16 @@ jobs:
 
 
           # ========================================================
-          # FIX 2
+          # PATCH B
           #
           # geometry_nodes_bundle.cc
           #
-          # Exact source contains two fmt::join(path, "/").
+          # There are exactly two:
           #
-          # The path element types differ, so support:
+          #   fmt::join(path, "/")
           #
-          #   StringRef
-          #   BundleKey
+          # One path uses StringRef.
+          # Another uses BundleKey.
           # ========================================================
 
           file2 = Path(
@@ -587,13 +792,14 @@ jobs:
           count = text.count(needle)
 
           print(
-              "geometry_nodes_bundle.cc path joins:",
+              "path fmt::join occurrences:",
               count,
           )
 
           if count != 2:
               raise SystemExit(
-                  "ERROR: expected exactly 2 path joins; "
+                  "ERROR: expected exactly two "
+                  "path fmt::join expressions; "
                   f"found {count}"
               )
 
@@ -611,131 +817,8 @@ jobs:
 
 
           # ========================================================
-          # FIX 3
-          #
-          # XCODE 16.4 / IOS 18.5 UIWINDOWSCENE COMPATIBILITY
-          #
-          # Previous build showed the same expression in:
-          #
-          #   GHOST_WindowIOS.mm
-          #
-          # Next build showed it again in:
-          #
-          #   GHOST_SystemIOS.mm
-          #
-          # Fix ALL occurrences in iOS GHOST .mm files so we do not
-          # discover them one file at a time.
-          #
-          # Generic transformation:
-          #
-          #   scene.effectiveGeometry.coordinateSpace
-          #
-          # becomes:
-          #
-          #   scene.coordinateSpace
+          # VERIFY FMT PATCHES
           # ========================================================
-
-          ghost_dir = Path(
-              "intern/ghost/intern"
-          )
-
-          ios_mm_files = sorted(
-              ghost_dir.glob("GHOST_*IOS.mm")
-          )
-
-          if not ios_mm_files:
-              raise SystemExit(
-                  "ERROR: no GHOST_*IOS.mm files found"
-              )
-
-          old = ".effectiveGeometry.coordinateSpace"
-          new = ".coordinateSpace"
-
-          total = 0
-          changed_files = []
-
-          print()
-          print(
-              "Scanning iOS GHOST source for:",
-              old,
-          )
-
-          for path in ios_mm_files:
-              text = path.read_text()
-
-              count = text.count(old)
-
-              if count == 0:
-                  continue
-
-              print(
-                  path,
-                  "occurrences:",
-                  count,
-              )
-
-              text = text.replace(
-                  old,
-                  new,
-              )
-
-              path.write_text(text)
-
-              total += count
-              changed_files.append(
-                  (path, count)
-              )
-
-          print()
-          print(
-              "Total UIWindowSceneGeometry "
-              "coordinateSpace replacements:",
-              total,
-          )
-
-          if total < 2:
-              raise SystemExit(
-                  "ERROR: expected at least the two known "
-                  "effectiveGeometry.coordinateSpace uses; "
-                  f"found {total}"
-              )
-
-          print()
-          print(
-              "Changed GHOST files:"
-          )
-
-          for path, count in changed_files:
-              print(
-                  " ",
-                  path,
-                  count,
-              )
-
-
-          # ========================================================
-          # VERIFY
-          #
-          # We deliberately check the entire iOS GHOST directory,
-          # not just the files already encountered by the compiler.
-          # ========================================================
-
-          remaining_ghost = []
-
-          for path in ios_mm_files:
-              text = path.read_text()
-
-              if old in text:
-                  remaining_ghost.append(
-                      str(path)
-                  )
-
-          if remaining_ghost:
-              raise SystemExit(
-                  "ERROR: effectiveGeometry.coordinateSpace "
-                  "still exists in:\n"
-                  + "\n".join(remaining_ghost)
-              )
 
           if 'fmt::join(overridden_keys, ", ")' in file1.read_text():
               raise SystemExit(
@@ -749,45 +832,74 @@ jobs:
 
           print()
           print(
-              "All source compatibility fixes verified."
+              "fmt compatibility patches verified."
           )
           PY
 
           echo
           echo "========================================"
-          echo "COMPATIBILITY DIFF"
+          echo "FMT PATCH DIFF"
           echo "========================================"
 
           git diff -- \
             source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
-            source/blender/nodes/intern/geometry_nodes_bundle.cc \
-            intern/ghost/intern
+            source/blender/nodes/intern/geometry_nodes_bundle.cc
 
           git diff -- \
             source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
             source/blender/nodes/intern/geometry_nodes_bundle.cc \
-            intern/ghost/intern \
             > compatibility.patch
 
-          echo
-          echo "===== Verify no incompatible scene API remains ====="
+      # ============================================================
+      # 18. VERIFY MODERN IOS SOURCE IS UNTOUCHED
+      #
+      # The previous builds found this API in both GHOST_WindowIOS
+      # and GHOST_SystemIOS. Under Xcode 26.3 we want it intact.
+      # ============================================================
 
-          if grep -RIn \
+      - name: Verify modern UIKit source
+        run: |
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "MODERN UIKIT CALLS"
+          echo "========================================"
+
+          grep -RIn \
             '\.effectiveGeometry\.coordinateSpace' \
             intern/ghost/intern \
-            --include='GHOST_*IOS.mm'
-          then
-            echo "ERROR: incompatible UIWindowScene API remains"
+            --include='GHOST_*IOS.mm' \
+            | tee modern-uikit-calls.txt
+
+          COUNT="$(
+            grep -RIl \
+              '\.effectiveGeometry\.coordinateSpace' \
+              intern/ghost/intern \
+              --include='GHOST_*IOS.mm' \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          echo
+          echo "Files using modern API: $COUNT"
+
+          if [ "$COUNT" -lt 1 ]; then
+            echo
+            echo "ERROR: modern effectiveGeometry API unexpectedly missing."
             exit 1
           fi
 
-          echo "No effectiveGeometry.coordinateSpace calls remain."
+          echo
+          echo "No Xcode-16 UIKit fallback patch is being applied."
 
       # ============================================================
-      # 15. CONFIGURE BLENDER
+      # 19. CONFIGURE BLENDER FOR IOS
       #
-      # Python ON.
-      # Cycles OFF.
+      # Python stays ON.
+      # Cycles stays OFF.
+      #
+      # No UIKit source workaround.
+      # No fmt header replacement.
       # ============================================================
 
       - name: Configure Blender
@@ -809,11 +921,20 @@ jobs:
             dirname "$IOS_SDK_ROOT"
           )"
 
-          echo "===== SDK ====="
+          echo "========================================"
+          echo "CONFIGURE"
+          echo "========================================"
+
+          echo
+          echo "Xcode:"
+          xcodebuild -version
+
+          echo
+          echo "SDK:"
           echo "$IOS_SDK_ROOT"
 
           echo
-          echo "===== LIBDIR ====="
+          echo "LIBDIR:"
           echo "$IOS_LIBDIR"
 
           cmake \
@@ -824,19 +945,20 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DWITH_APPLE_CROSSPLATFORM=ON \
             -DAPPLE_TARGET_DEVICE=ios \
+            -DWITH_PYTHON=ON \
             -DWITH_CYCLES=OFF \
             -DCMAKE_FIND_ROOT_PATH="$IOS_DEV_ROOT;$(dirname "$IOS_DEV_ROOT");$IOS_LIBDIR" \
             2>&1 | tee configure.log
 
       # ============================================================
-      # 16. VERIFY CONFIGURATION
+      # 20. VERIFY CMAKE CONFIGURATION
       # ============================================================
 
       - name: Verify configuration
         run: |
-          set -eux
+          set -euxo pipefail
 
-          echo "===== Important CMake options ====="
+          echo "===== Important options ====="
 
           grep -E \
             'WITH_CYCLES:|WITH_PYTHON:|WITH_PYTHON_NUMPY:|WITH_AUDASPACE:|WITH_METAL_BACKEND:' \
@@ -844,13 +966,15 @@ jobs:
             || true
 
           CYCLES="$(
-            grep '^WITH_CYCLES:BOOL=' \
+            grep \
+              '^WITH_CYCLES:BOOL=' \
               build_ios/CMakeCache.txt \
               | cut -d= -f2
           )"
 
           PYTHON="$(
-            grep '^WITH_PYTHON:BOOL=' \
+            grep \
+              '^WITH_PYTHON:BOOL=' \
               build_ios/CMakeCache.txt \
               | cut -d= -f2
           )"
@@ -859,18 +983,21 @@ jobs:
           echo "WITH_CYCLES=$CYCLES"
           echo "WITH_PYTHON=$PYTHON"
 
-          if [ "$CYCLES" != "OFF" ]; then
-            echo "ERROR: Cycles is not OFF"
-            exit 1
-          fi
+          test "$CYCLES" = "OFF"
+          test "$PYTHON" = "ON"
 
-          if [ "$PYTHON" != "ON" ]; then
-            echo "ERROR: Python is not ON"
-            exit 1
-          fi
+          echo
+          echo "===== CMake Xcode info ====="
+
+          grep -E \
+            'CMAKE_OSX_SYSROOT|CMAKE_XCODE' \
+            build_ios/CMakeCache.txt \
+            || true
 
       # ============================================================
-      # 17. BUILD
+      # 21. BUILD BLENDER
+      #
+      # Keep jobs at 3 to avoid unnecessary memory pressure.
       # ============================================================
 
       - name: Build Blender for physical iOS
@@ -880,6 +1007,13 @@ jobs:
           echo "========================================"
           echo "BUILD BLENDER"
           echo "========================================"
+
+          echo
+          xcodebuild -version
+
+          echo
+          echo "SDK:"
+          xcrun --sdk iphoneos --show-sdk-version
 
           set +e
 
@@ -910,7 +1044,7 @@ jobs:
             echo "========================================"
 
             echo
-            echo "===== ALL compiler/linker errors ====="
+            echo "===== Compiler / linker errors ====="
 
             grep -n -C 30 \
               -E \
@@ -924,11 +1058,11 @@ jobs:
               || true
 
             echo
-            echo "===== iOS / GHOST diagnostics ====="
+            echo "===== UIKit / GHOST diagnostics ====="
 
             grep -n -C 20 \
               -E \
-              'GHOST_.*IOS|UIWindowScene|coordinateSpace|effectiveGeometry|UIKit' \
+              'GHOST_.*IOS|UIWindowScene|effectiveGeometry|coordinateSpace|UIKit' \
               xcodebuild.log \
               > ios-errors.txt \
               || true
@@ -954,7 +1088,7 @@ jobs:
             echo
             echo "===== Linker diagnostics ====="
 
-            grep -n -C 25 \
+            grep -n -C 30 \
               -E \
               'Undefined symbols|duplicate symbol|library not found|framework not found|ld: |clang: error: linker' \
               xcodebuild.log \
@@ -979,9 +1113,9 @@ jobs:
               || true
 
             echo
-            echo "===== Last 600 lines ====="
+            echo "===== Last 700 lines ====="
 
-            tail -600 \
+            tail -700 \
               xcodebuild.log \
               || true
 
@@ -997,29 +1131,34 @@ jobs:
             xcodebuild.log
 
       # ============================================================
-      # 18. FIND Blender.app
+      # 22. FIND Blender.app
       # ============================================================
 
       - name: Find Blender.app
         run: |
-          set -eux
+          set -euxo pipefail
 
           APP="$(
             find \
               "$GITHUB_WORKSPACE/build_ios" \
               -type d \
-              -name 'Blender.app' \
-              -print -quit
+              \( \
+                -name 'Blender.app' \
+                -o \
+                -name 'blender.app' \
+              \) \
+              -print \
+              -quit
           )"
 
           if [ -z "$APP" ] || \
              [ ! -d "$APP" ]
           then
 
-            echo "ERROR: Blender.app not found"
+            echo "ERROR: Blender.app not found."
 
             echo
-            echo "===== Generated apps ====="
+            echo "===== All generated app bundles ====="
 
             find \
               build_ios \
@@ -1034,22 +1173,31 @@ jobs:
           echo "APP=$APP" \
             >> "$GITHUB_ENV"
 
+          echo
           echo "===== Blender.app ====="
+
           echo "$APP"
 
           du -sh \
             "$APP"
 
       # ============================================================
-      # 19. VERIFY EXECUTABLE
+      # 23. VERIFY APP EXECUTABLE
       # ============================================================
 
       - name: Verify Blender executable
         run: |
-          set -eux
+          set -euxo pipefail
 
           test -f \
             "$APP/Info.plist"
+
+          echo "===== Info.plist ====="
+
+          plutil \
+            -p \
+            "$APP/Info.plist" \
+            | head -100
 
           EXEC_NAME="$(
             /usr/libexec/PlistBuddy \
@@ -1073,9 +1221,16 @@ jobs:
             EXEC_NAME="Blender"
             EXECUTABLE="$APP/Blender"
 
+          elif [ -f "$APP/blender" ]
+          then
+
+            EXEC_NAME="blender"
+            EXECUTABLE="$APP/blender"
+
           else
 
-            echo "ERROR: Blender executable not found"
+            echo
+            echo "ERROR: executable not found."
 
             find \
               "$APP" \
@@ -1094,10 +1249,8 @@ jobs:
 
           echo
           echo "===== Executable ====="
-          echo "$EXECUTABLE"
 
-          echo
-          echo "===== File type ====="
+          echo "$EXECUTABLE"
 
           file \
             "$EXECUTABLE"
@@ -1110,12 +1263,12 @@ jobs:
             || true
 
       # ============================================================
-      # 20. INSPECT APP
+      # 24. INSPECT APP
       # ============================================================
 
       - name: Inspect Blender.app
         run: |
-          set -eux
+          set -euxo pipefail
 
           echo "===== App size ====="
 
@@ -1129,15 +1282,15 @@ jobs:
             "$APP" \
             -maxdepth 2 \
             -print \
-            | head -200
+            | head -250
 
       # ============================================================
-      # 21. PACKAGE UNSIGNED IPA
+      # 25. PACKAGE UNSIGNED IPA
       # ============================================================
 
       - name: Package unsigned IPA
         run: |
-          set -eux
+          set -euxo pipefail
 
           rm -rf \
             package
@@ -1154,13 +1307,13 @@ jobs:
           zip \
             -qry \
             -y \
-            ../Blender-5.2-iPad-Cycles-OFF.ipa \
+            ../Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa \
             Payload
 
           cd ..
 
           test -f \
-            Blender-5.2-iPad-Cycles-OFF.ipa
+            Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa
 
           echo
           echo "========================================"
@@ -1168,17 +1321,17 @@ jobs:
           echo "========================================"
 
           ls -lh \
-            Blender-5.2-iPad-Cycles-OFF.ipa
+            Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa
 
           echo
           echo "===== IPA contents ====="
 
           unzip -l \
-            Blender-5.2-iPad-Cycles-OFF.ipa \
-            | head -120
+            Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa \
+            | head -150
 
       # ============================================================
-      # 22. BUILD INFORMATION
+      # 26. WRITE BUILD INFORMATION
       # ============================================================
 
       - name: Write build information
@@ -1191,61 +1344,88 @@ jobs:
 
             echo "Source commit:"
             git rev-parse HEAD \
-              2>/dev/null || true
+              2>/dev/null \
+              || true
             echo
 
             echo "iOS libraries:"
             git -C lib/ios_arm64 \
               rev-parse HEAD \
-              2>/dev/null || true
+              2>/dev/null \
+              || true
             echo
 
             echo "macOS libraries:"
             git -C lib/macos_arm64 \
               rev-parse HEAD \
-              2>/dev/null || true
+              2>/dev/null \
+              || true
+            echo
+
+            echo "Xcode:"
+            xcodebuild -version \
+              2>/dev/null \
+              || true
+            echo
+
+            echo "iPhoneOS SDK:"
+            xcrun \
+              --sdk iphoneos \
+              --show-sdk-version \
+              2>/dev/null \
+              || true
             echo
 
             echo "Build options:"
+            echo "WITH_PYTHON=ON"
             echo "WITH_CYCLES=OFF"
             echo
 
-            echo "Compatibility fixes:"
+            echo "Source compatibility fixes:"
             echo "BundleKey fmt::join"
-            echo "StringRef / BundleKey path joins"
-            echo "All iOS GHOST effectiveGeometry.coordinateSpace uses"
+            echo "StringRef / BundleKey path fmt::join"
+            echo
+
+            echo "UIKit compatibility patches:"
+            echo "NONE"
+            echo
+
+            echo "UIKit source API:"
+            echo "effectiveGeometry.coordinateSpace"
           } > build-revision.txt
 
           cat \
             build-revision.txt
 
       # ============================================================
-      # 23. UPLOAD IPA
+      # 27. UPLOAD IPA
       # ============================================================
 
       - name: Upload Blender IPA
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: Blender-5.2-iPad-Cycles-OFF
+          name: Blender-5.2-iPad-Xcode26
           path: |
-            Blender-5.2-iPad-Cycles-OFF.ipa
+            Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa
             build-revision.txt
             compatibility.patch
+          if-no-files-found: error
           retention-days: 30
 
       # ============================================================
-      # 24. ALWAYS UPLOAD LOGS
+      # 28. ALWAYS UPLOAD DIAGNOSTIC LOGS
       # ============================================================
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: blender-ios-build-logs
+          name: blender-ios-xcode26-build-logs
           path: |
             build-revision.txt
             compatibility.patch
+            modern-uikit-calls.txt
             source-lfs.log
             ios-lfs.log
             macos-lfs.log
