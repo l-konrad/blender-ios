@@ -23,7 +23,9 @@ jobs:
 
       IOS_DEPLOYMENT_TARGET: "26.2"
 
-      # Keep this unchanged so previous partial builds remain reusable.
+      # IMPORTANT:
+      # Keep this unchanged for small source/resource fixes.
+      # That allows previous compiled Xcode objects to be restored.
       BUILD_CACHE_VERSION: fast-v3
 
     steps:
@@ -65,6 +67,9 @@ jobs:
 
       # ============================================================
       # 3. NORMALIZE SOURCE TIMESTAMPS
+      #
+      # Helps Xcode reuse objects restored from the previous run.
+      # Files modified by our patches later receive new timestamps.
       # ============================================================
 
       - name: Normalize source timestamps
@@ -88,7 +93,7 @@ jobs:
               ).strip()
           )
 
-          files = subprocess.check_output(
+          tracked = subprocess.check_output(
               [
                   "git",
                   "ls-files",
@@ -98,7 +103,7 @@ jobs:
 
           count = 0
 
-          for raw in files.split(b"\0"):
+          for raw in tracked.split(b"\0"):
               if not raw:
                   continue
 
@@ -135,7 +140,7 @@ jobs:
           XCODE="/Applications/Xcode_26.3.app"
 
           if [ ! -d "$XCODE" ]; then
-            echo "ERROR: Xcode 26.3 is not installed."
+            echo "ERROR: Xcode 26.3 is unavailable."
             echo
             echo "Installed Xcodes:"
             ls -d /Applications/Xcode*.app || true
@@ -190,7 +195,7 @@ jobs:
             26.*)
               ;;
             *)
-              echo "ERROR: Expected iOS 26.x SDK."
+              echo "ERROR: Expected an iOS 26.x SDK."
               exit 1
               ;;
           esac
@@ -202,7 +207,7 @@ jobs:
             >> "$GITHUB_ENV"
 
       # ============================================================
-      # 6. QUICK UIKIT API PROBE
+      # 6. QUICK UIKIT API TEST
       # ============================================================
 
       - name: Test modern UIWindowScene API
@@ -257,7 +262,7 @@ jobs:
           if [ "$FREE_KB" -lt 30000000 ]; then
 
             echo
-            echo "Low disk space. Cleaning..."
+            echo "Low disk space. Cleaning runner..."
 
             sudo rm -rf \
               /usr/local/lib/android \
@@ -293,7 +298,7 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
 
       # ============================================================
-      # 8. REQUIRED BUILD TOOLS
+      # 8. REQUIRED TOOLS
       # ============================================================
 
       - name: Ensure build tools
@@ -346,10 +351,15 @@ jobs:
             lfs.remote.searchall \
             true
 
+          echo
           git remote -v
 
       # ============================================================
-      # 10. RESTORE SOURCE ASSETS
+      # 10. RESTORE SOURCE RESOURCE CACHE
+      #
+      # v4 adds the bundled app-template .blend files.
+      #
+      # Changing this cache DOES NOT change BUILD_CACHE_VERSION.
       # ============================================================
 
       - name: Restore source assets
@@ -358,18 +368,378 @@ jobs:
         with:
           path: |
             release/datafiles
+            scripts/startup/bl_app_templates_system
             release/ios/Blender.app/Assets.xcassets
-          key: blender-source-assets-${{ env.BLENDER_SHA }}-fallback-icon-v3
+          key: blender-source-assets-${{ env.BLENDER_SHA }}-materialized-v4
 
       # ============================================================
-      # 11. PREPARE DATAFILES + APP ICON
+      # 11. MATERIALIZE ALL PACKAGED LFS RESOURCES
+      #
+      # Previous run proved these source trees can contain pointers
+      # that later get copied directly into Blender.app:
+      #
+      #   release/datafiles
+      #   scripts
+      #
+      # Instead of relying solely on "git lfs checkout", this step:
+      #
+      #   1. reads each pointer's SHA-256
+      #   2. fetches the corresponding LFS object
+      #   3. locates it in .git/lfs/objects
+      #   4. SHA-256 verifies it
+      #   5. copies the real data over the pointer
+      #
+      # The broken AppIcon is handled separately below because its
+      # original LFS object is unavailable.
       # ============================================================
 
-      - name: Prepare required source assets
+      - name: Materialize packaged source resources
+        shell: bash
         run: |
           set -euxo pipefail
 
-          DATA_DIR="release/datafiles"
+          LFS_MAGIC='version https://git-lfs.github.com/spec/v1'
+
+          # --------------------------------------------------------
+          # Helper for one Git LFS pointer.
+          # --------------------------------------------------------
+
+          materialize_lfs_pointer()
+          {
+            FILE="$1"
+
+            if [ ! -f "$FILE" ]; then
+              echo "ERROR: file is missing:"
+              echo "  $FILE"
+              return 1
+            fi
+
+            if ! head -c 200 "$FILE" \
+              | grep -q "$LFS_MAGIC"
+            then
+              return 0
+            fi
+
+            echo
+            echo "----------------------------------------"
+            echo "Materializing LFS file:"
+            echo "  $FILE"
+
+            OID="$(
+              sed -n \
+                's/^oid sha256://p' \
+                "$FILE"
+            )"
+
+            if [ -z "$OID" ]; then
+              echo "ERROR: LFS pointer contains no SHA-256 OID:"
+              echo "  $FILE"
+              return 1
+            fi
+
+            echo "OID:"
+            echo "  $OID"
+
+            GIT_DIR="$(
+              git rev-parse \
+                --git-dir
+            )"
+
+            OBJECT="$GIT_DIR/lfs/objects/${OID:0:2}/${OID:2:2}/$OID"
+
+            # ------------------------------------------------------
+            # If not already downloaded, try Blender's official LFS
+            # server first.
+            # ------------------------------------------------------
+
+            if [ ! -f "$OBJECT" ]; then
+
+              echo "Fetching from official Blender LFS..."
+
+              git lfs fetch \
+                blender-lfs \
+                --include="$FILE" \
+                HEAD \
+                || true
+
+            fi
+
+            # ------------------------------------------------------
+            # Some fork-specific content might exist only on origin.
+            # ------------------------------------------------------
+
+            if [ ! -f "$OBJECT" ]; then
+
+              echo "Official server did not provide it."
+              echo "Trying Salmazov origin..."
+
+              git lfs fetch \
+                origin \
+                --include="$FILE" \
+                HEAD \
+                || true
+
+            fi
+
+            if [ ! -f "$OBJECT" ]; then
+
+              echo
+              echo "ERROR: LFS object is unavailable."
+              echo "File:"
+              echo "  $FILE"
+              echo "OID:"
+              echo "  $OID"
+
+              return 1
+
+            fi
+
+            TEMP="${FILE}.materialized"
+
+            cp \
+              "$OBJECT" \
+              "$TEMP"
+
+            ACTUAL="$(
+              shasum \
+                -a 256 \
+                "$TEMP" \
+                | awk '{print $1}'
+            )"
+
+            if [ "$ACTUAL" != "$OID" ]; then
+
+              echo
+              echo "ERROR: downloaded LFS object failed SHA-256 verification."
+              echo "File:"
+              echo "  $FILE"
+              echo "Expected:"
+              echo "  $OID"
+              echo "Actual:"
+              echo "  $ACTUAL"
+
+              rm -f "$TEMP"
+
+              return 1
+
+            fi
+
+            mv \
+              "$TEMP" \
+              "$FILE"
+
+            if head -c 200 "$FILE" \
+              | grep -q "$LFS_MAGIC"
+            then
+
+              echo "ERROR: materialized file still looks like a pointer."
+              return 1
+
+            fi
+
+            echo "Materialized:"
+            echo "  $FILE"
+          }
+
+          # --------------------------------------------------------
+          # Broad prefetches.
+          #
+          # These save lots of individual requests when many asset
+          # files are pointers.
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "PREFETCH release/datafiles"
+          echo "========================================"
+
+          git lfs fetch \
+            blender-lfs \
+            --include="release/datafiles/**" \
+            HEAD \
+            2>&1 | tee source-lfs.log \
+            || true
+
+          echo
+          echo "========================================"
+          echo "PREFETCH scripts"
+          echo "========================================"
+
+          git lfs fetch \
+            blender-lfs \
+            --include="scripts/**" \
+            HEAD \
+            2>&1 | tee -a source-lfs.log \
+            || true
+
+          # --------------------------------------------------------
+          # Materialize ALL pointers under release/datafiles.
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "MATERIALIZE release/datafiles"
+          echo "========================================"
+
+          DATA_COUNT=0
+
+          while IFS= read -r -d '' FILE
+          do
+
+            if head -c 200 "$FILE" \
+              | grep -q "$LFS_MAGIC"
+            then
+
+              materialize_lfs_pointer \
+                "$FILE"
+
+              DATA_COUNT=$((DATA_COUNT + 1))
+
+            fi
+
+          done < <(
+            find \
+              release/datafiles \
+              -type f \
+              -print0
+          )
+
+          echo
+          echo "Materialized datafile pointers: $DATA_COUNT"
+
+          # --------------------------------------------------------
+          # Materialize ALL pointers under scripts.
+          #
+          # This includes the startup.blend files seen in the failed
+          # packaged-app verification.
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "MATERIALIZE scripts"
+          echo "========================================"
+
+          SCRIPT_COUNT=0
+
+          while IFS= read -r -d '' FILE
+          do
+
+            if head -c 200 "$FILE" \
+              | grep -q "$LFS_MAGIC"
+            then
+
+              materialize_lfs_pointer \
+                "$FILE"
+
+              SCRIPT_COUNT=$((SCRIPT_COUNT + 1))
+
+            fi
+
+          done < <(
+            find \
+              scripts \
+              -type f \
+              -print0
+          )
+
+          echo
+          echo "Materialized script pointers: $SCRIPT_COUNT"
+
+          # --------------------------------------------------------
+          # startup.blend explicit hard check.
+          # --------------------------------------------------------
+
+          STARTUP="release/datafiles/startup.blend"
+
+          materialize_lfs_pointer \
+            "$STARTUP"
+
+          STARTUP_SIZE="$(
+            stat \
+              -f '%z' \
+              "$STARTUP"
+          )"
+
+          echo
+          echo "startup.blend size:"
+          echo "$STARTUP_SIZE"
+
+          if [ "$STARTUP_SIZE" -lt 1024 ]; then
+            echo "ERROR: startup.blend is unexpectedly tiny."
+            exit 1
+          fi
+
+          # --------------------------------------------------------
+          # Hard pointer scan before doing an expensive compile.
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "VERIFY PACKAGED SOURCE RESOURCES"
+          echo "========================================"
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          roots = [
+              Path("release/datafiles"),
+              Path("scripts"),
+          ]
+
+          magic = (
+              b"version "
+              b"https://git-lfs.github.com/spec/v1"
+          )
+
+          bad = []
+
+          for root in roots:
+              if not root.exists():
+                  continue
+
+              for path in root.rglob("*"):
+                  if not path.is_file():
+                      continue
+
+                  try:
+                      if path.read_bytes()[:200].startswith(magic):
+                          bad.append(path)
+                  except OSError:
+                      pass
+
+          if bad:
+              print(
+                  "ERROR: packaged source resources still "
+                  "contain Git LFS pointers:"
+              )
+
+              for path in bad:
+                  print(
+                      " ",
+                      path,
+                  )
+
+              raise SystemExit(1)
+
+          print(
+              "All release/datafiles and scripts resources "
+              "are materialized."
+          )
+          PY
+
+      # ============================================================
+      # 12. PREPARE THE APP ICON
+      #
+      # The original Salmazov icon LFS object is unavailable.
+      #
+      # Keep generating a valid local 1024x1024 RGB icon instead.
+      # ============================================================
+
+      - name: Prepare iOS AppIcon
+        run: |
+          set -euxo pipefail
+
+          LFS_MAGIC='version https://git-lfs.github.com/spec/v1'
 
           ICON_DIR="release/ios/Blender.app/Assets.xcassets/AppIcon.appiconset"
 
@@ -377,138 +747,38 @@ jobs:
 
           CONTENTS="$ICON_DIR/Contents.json"
 
-          LFS_MAGIC='version https://git-lfs.github.com/spec/v1'
-
-          test -d "$DATA_DIR"
           test -d "$ICON_DIR"
           test -f "$CONTENTS"
-
-          echo
-          echo "========================================"
-          echo "CHECK DATAFILE POINTERS"
-          echo "========================================"
-
-          python3 <<'PY' > /tmp/datafile-lfs-pointers.txt
-          from pathlib import Path
-
-          root = Path(
-              "release/datafiles"
-          )
-
-          magic = (
-              b"version "
-              b"https://git-lfs.github.com/spec/v1"
-          )
-
-          for path in root.rglob("*"):
-              if not path.is_file():
-                  continue
-
-              try:
-                  if path.read_bytes()[:200].startswith(magic):
-                      print(path)
-              except OSError:
-                  pass
-          PY
-
-          cat \
-            /tmp/datafile-lfs-pointers.txt \
-            || true
-
-          if [ -s /tmp/datafile-lfs-pointers.txt ]; then
-
-            echo
-            echo "Fetching Blender release/datafiles..."
-
-            git lfs fetch \
-              blender-lfs \
-              --include="release/datafiles/**" \
-              HEAD \
-              2>&1 | tee source-lfs.log \
-              || true
-
-            git lfs checkout \
-              release/datafiles \
-              || true
-
-          else
-
-            echo
-            echo "No datafile pointers require fetching."
-
-          fi
-
-          # --------------------------------------------------------
-          # startup.blend is required.
-          # --------------------------------------------------------
-
-          STARTUP="release/datafiles/startup.blend"
-
-          test -f "$STARTUP"
-
-          if head -c 200 "$STARTUP" \
-            | grep -q "$LFS_MAGIC"
-          then
-
-            echo
-            echo "Fetching startup.blend..."
-
-            git lfs fetch \
-              blender-lfs \
-              --include="release/datafiles/startup.blend" \
-              HEAD \
-              2>&1 | tee -a source-lfs.log
-
-            git lfs checkout \
-              release/datafiles/startup.blend
-          fi
-
-          if head -c 200 "$STARTUP" \
-            | grep -q "$LFS_MAGIC"
-          then
-            echo "ERROR: startup.blend is still an LFS pointer."
-            exit 1
-          fi
-
-          STARTUP_SIZE="$(
-            stat -f '%z' "$STARTUP"
-          )"
-
-          echo
-          echo "startup.blend size: $STARTUP_SIZE"
-
-          test "$STARTUP_SIZE" -gt 1024
-
-          # --------------------------------------------------------
-          # Dead Salmazov AppIcon LFS object.
-          # --------------------------------------------------------
-
-          echo
-          echo "========================================"
-          echo "APP ICON"
-          echo "========================================"
 
           NEED_ICON=0
 
           if [ ! -f "$ICON" ]; then
 
+            echo "AppIcon is missing."
             NEED_ICON=1
 
           elif [ ! -s "$ICON" ]; then
 
+            echo "AppIcon is empty."
             NEED_ICON=1
 
           elif head -c 200 "$ICON" \
             | grep -q "$LFS_MAGIC"
           then
 
+            echo "AppIcon is still the dead Git LFS pointer."
             NEED_ICON=1
+
+          else
+
+            echo "AppIcon already contains real image data."
 
           fi
 
           if [ "$NEED_ICON" -eq 1 ]; then
 
-            echo "Generating fallback 1024x1024 RGB icon..."
+            echo
+            echo "Generating fallback 1024x1024 RGB AppIcon..."
 
             ICON_PATH="$ICON" python3 <<'PY'
           import binascii
@@ -521,6 +791,8 @@ jobs:
           width = 1024
           height = 1024
 
+          # Blender-like orange RGB.
+          # No alpha channel.
           pixel = bytes(
               (
                   243,
@@ -600,17 +872,13 @@ jobs:
           )
           PY
 
-          else
-
-            echo "App icon already contains real image data."
-
           fi
 
-          # --------------------------------------------------------
-          # Validate icon.
-          # --------------------------------------------------------
+          echo
+          echo "===== AppIcon ====="
 
-          file "$ICON"
+          file \
+            "$ICON"
 
           sips \
             -g pixelWidth \
@@ -639,13 +907,11 @@ jobs:
           if head -c 200 "$ICON" \
             | grep -q "$LFS_MAGIC"
           then
-            echo "ERROR: AppIcon is still an LFS pointer."
-            exit 1
-          fi
 
-          # --------------------------------------------------------
-          # Verify Contents.json.
-          # --------------------------------------------------------
+            echo "ERROR: AppIcon remains an LFS pointer."
+            exit 1
+
+          fi
 
           python3 <<'PY'
           import json
@@ -662,7 +928,7 @@ jobs:
               path.read_text()
           )
 
-          filenames = {
+          files = {
               item.get("filename")
               for item in data.get(
                   "images",
@@ -677,18 +943,18 @@ jobs:
 
           print(
               "Referenced AppIcon files:",
-              filenames,
+              files,
           )
 
-          if expected not in filenames:
+          if expected not in files:
               raise SystemExit(
-                  "ERROR: Contents.json does not "
-                  f"reference {expected}"
+                  "ERROR: AppIcon Contents.json does "
+                  f"not reference {expected}"
               )
           PY
 
           # --------------------------------------------------------
-          # No pointers may remain in Assets.xcassets.
+          # No LFS pointer may remain anywhere in Assets.xcassets.
           # --------------------------------------------------------
 
           python3 <<'PY'
@@ -718,8 +984,7 @@ jobs:
 
           if bad:
               print(
-                  "ERROR: LFS pointers remain "
-                  "inside Assets.xcassets:"
+                  "ERROR: LFS pointers remain in Assets.xcassets:"
               )
 
               for path in bad:
@@ -731,12 +996,15 @@ jobs:
               raise SystemExit(1)
 
           print(
-              "Assets.xcassets is fully materialized."
+              "iOS Assets.xcassets is fully materialized."
           )
           PY
 
       # ============================================================
-      # 12. SAVE SOURCE ASSETS EARLY
+      # 13. SAVE SOURCE RESOURCE CACHE EARLY
+      #
+      # Save the real .blend resources before compilation so another
+      # source/compiler failure cannot force us to fetch them again.
       # ============================================================
 
       - name: Save source asset cache
@@ -746,11 +1014,12 @@ jobs:
         with:
           path: |
             release/datafiles
+            scripts/startup/bl_app_templates_system
             release/ios/Blender.app/Assets.xcassets
-          key: blender-source-assets-${{ env.BLENDER_SHA }}-fallback-icon-v3
+          key: blender-source-assets-${{ env.BLENDER_SHA }}-materialized-v4
 
       # ============================================================
-      # 13. DETERMINE LIBRARY REVISIONS
+      # 14. DETERMINE LIBRARY REVISIONS
       # ============================================================
 
       - name: Determine library revisions
@@ -803,7 +1072,7 @@ jobs:
           echo "$MAC_SHA"
 
       # ============================================================
-      # 14. VERIFY LIBRARY PINS
+      # 15. VERIFY LIBRARY PINS
       # ============================================================
 
       - name: Verify library revisions
@@ -819,7 +1088,7 @@ jobs:
             = "$EXPECTED_MAC_LIB_SHA"
 
       # ============================================================
-      # 15. RESTORE IOS LIBRARIES
+      # 16. RESTORE IOS LIBRARIES
       # ============================================================
 
       - name: Restore iOS libraries
@@ -830,7 +1099,7 @@ jobs:
           key: blender-ioslib-${{ steps.libs.outputs.ios_sha }}-v3
 
       # ============================================================
-      # 16. FETCH IOS LIBRARIES
+      # 17. FETCH IOS LIBRARIES
       # ============================================================
 
       - name: Fetch iOS libraries
@@ -881,7 +1150,7 @@ jobs:
             lib/ios_arm64
 
       # ============================================================
-      # 17. VERIFY IOS LIBRARIES
+      # 18. VERIFY IOS LIBRARIES
       # ============================================================
 
       - name: Verify iOS libraries
@@ -904,7 +1173,7 @@ jobs:
             lib/ios_arm64/python/lib/libpython3.11.a
 
       # ============================================================
-      # 18. SAVE IOS LIBRARIES
+      # 19. SAVE IOS LIBRARY CACHE
       # ============================================================
 
       - name: Save iOS library cache
@@ -916,7 +1185,7 @@ jobs:
           key: blender-ioslib-${{ steps.libs.outputs.ios_sha }}-v3
 
       # ============================================================
-      # 19. RESTORE MACOS LIBRARIES
+      # 20. RESTORE MACOS HOST LIBRARIES
       # ============================================================
 
       - name: Restore macOS libraries
@@ -927,7 +1196,7 @@ jobs:
           key: blender-maclib-${{ steps.libs.outputs.mac_sha }}-v3
 
       # ============================================================
-      # 20. FETCH MACOS LIBRARIES
+      # 21. FETCH MACOS HOST LIBRARIES
       # ============================================================
 
       - name: Fetch macOS libraries
@@ -978,7 +1247,7 @@ jobs:
             lib/macos_arm64
 
       # ============================================================
-      # 21. VERIFY MACOS LIBRARIES
+      # 22. VERIFY MACOS HOST LIBRARIES
       # ============================================================
 
       - name: Verify macOS libraries
@@ -1004,13 +1273,17 @@ jobs:
               -quit
           )"
 
-          test -n "$HOST_PYTHON"
+          if [ -z "$HOST_PYTHON" ]; then
+            echo "ERROR: host Python is missing."
+            exit 1
+          fi
 
+          echo
           echo "Host Python:"
           echo "$HOST_PYTHON"
 
       # ============================================================
-      # 22. SAVE MACOS LIBRARIES
+      # 23. SAVE MACOS LIBRARY CACHE
       # ============================================================
 
       - name: Save macOS library cache
@@ -1022,11 +1295,17 @@ jobs:
           key: blender-maclib-${{ steps.libs.outputs.mac_sha }}-v3
 
       # ============================================================
-      # 23. APPLY FMT COMPATIBILITY PATCHES
+      # 24. APPLY ALL KNOWN FMT COMPATIBILITY PATCHES
       #
       # 1. BundleKey fmt::join
-      # 2. StringRef / BundleKey path fmt::join
-      # 3. fmt::println compatibility for old iOS fmt
+      #
+      # 2. StringRef / BundleKey fmt::join(path)
+      #
+      # 3. mesh_bevel println compatibility for the old fmt pulled
+      #    indirectly from the iOS dependencies.
+      #
+      # No replacement fmt headers.
+      # No UIKit source patch.
       # ============================================================
 
       - name: Apply fmt compatibility fixes
@@ -1178,8 +1457,12 @@ jobs:
           # ========================================================
           # PATCH 3
           #
-          # The iOS fmt dependency exposes fmt::print but not the
-          # newer println API. Preserve newline behaviour locally.
+          # Blender source uses the newer println API.
+          #
+          # The fmt visible in this iOS build does not provide it.
+          #
+          # Handle zero-argument calls separately, then convert the
+          # remaining calls to a compatibility macro.
           # ========================================================
 
           file3 = Path(
@@ -1189,31 +1472,51 @@ jobs:
 
           text = file3.read_text()
 
-          old_call = "fmt::println("
+          call = "fmt::println("
 
-          println_count = text.count(
-              old_call
+          total = text.count(
+              call
+          )
+
+          zero_arg = text.count(
+              "fmt::println();"
           )
 
           print(
-              "mesh_bevel fmt println calls:",
-              println_count,
+              "mesh_bevel println calls:",
+              total,
           )
 
-          if println_count < 19:
+          print(
+              "zero-argument println calls:",
+              zero_arg,
+          )
+
+          if total < 19:
               raise SystemExit(
                   "ERROR: expected at least 19 "
                   "println calls; "
-                  f"found {println_count}"
+                  f"found {total}"
               )
 
-          macro = r'''
+          # Zero-argument println simply means one newline.
+          text = text.replace(
+              "fmt::println();",
+              'fmt::print("\\n");',
+          )
+
+          remaining_calls = text.count(
+              call
+          )
+
+          if remaining_calls:
+              macro = r'''
 
           /*
-           * Compatibility for the older fmt library in the
-           * prebuilt iOS dependency set.
+           * Compatibility for the older fmt implementation exposed
+           * by the iOS dependency set.
            *
-           * Preserve println behaviour using fmt::print.
+           * Preserve println behavior using fmt::print.
            */
           #ifndef BLENDER_FMT_PRINTLN_COMPAT
           #  define BLENDER_FMT_PRINTLN_COMPAT(...) \
@@ -1225,31 +1528,31 @@ jobs:
 
           '''
 
-          includes = list(
-              re.finditer(
-                  r"(?m)^#include[^\n]*\n",
-                  text,
-              )
-          )
-
-          if not includes:
-              raise SystemExit(
-                  "ERROR: could not find the "
-                  "mesh_bevel include block"
+              includes = list(
+                  re.finditer(
+                      r"(?m)^#include[^\n]*\n",
+                      text,
+                  )
               )
 
-          insert_at = includes[-1].end()
+              if not includes:
+                  raise SystemExit(
+                      "ERROR: could not find include "
+                      "block in mesh_bevel.cc"
+                  )
 
-          text = (
-              text[:insert_at]
-              + macro
-              + text[insert_at:]
-          )
+              insert_at = includes[-1].end()
 
-          text = text.replace(
-              old_call,
-              "BLENDER_FMT_PRINTLN_COMPAT(",
-          )
+              text = (
+                  text[:insert_at]
+                  + macro
+                  + text[insert_at:]
+              )
+
+              text = text.replace(
+                  call,
+                  "BLENDER_FMT_PRINTLN_COMPAT(",
+              )
 
           file3.write_text(
               text
@@ -1265,7 +1568,7 @@ jobs:
               in file1.read_text()
           ):
               raise SystemExit(
-                  "ERROR: BundleKey join remains"
+                  "ERROR: BundleKey fmt::join remains"
               )
 
           if (
@@ -1273,7 +1576,7 @@ jobs:
               in file2.read_text()
           ):
               raise SystemExit(
-                  "ERROR: path join remains"
+                  "ERROR: path fmt::join remains"
               )
 
           patched3 = file3.read_text()
@@ -1282,31 +1585,16 @@ jobs:
               "fmt::println("
           )
 
-          compat_calls = patched3.count(
-              "BLENDER_FMT_PRINTLN_COMPAT("
-          )
-
           print()
           print(
-              "Remaining fmt::println calls:",
+              "Remaining real fmt::println calls:",
               remaining,
-          )
-
-          print(
-              "Compatibility calls:",
-              compat_calls,
           )
 
           if remaining != 0:
               raise SystemExit(
-                  "ERROR: actual fmt::println call remains"
-              )
-
-          # One occurrence is the macro declaration itself.
-          if compat_calls < println_count:
-              raise SystemExit(
-                  "ERROR: not all println calls "
-                  "were converted"
+                  "ERROR: an actual fmt::println "
+                  "call remains"
               )
 
           print()
@@ -1332,28 +1620,26 @@ jobs:
             > compatibility.patch
 
           echo
-          echo "===== Verify no real fmt::println calls remain ====="
+          echo "===== Verify no actual println calls remain ====="
 
-          # IMPORTANT:
+          # Search for the function-call form specifically.
           #
-          # Search specifically for a CALL.
-          #
-          # The previous version searched merely for "fmt::println",
-          # which also matched a harmless explanatory comment.
-          #
+          # Do NOT search merely for "fmt::println", because a comment
+          # mentioning the API previously caused a false failure.
           if grep -nF \
             'fmt::println(' \
             source/blender/geometry/intern/mesh_bevel.cc
           then
-            echo "ERROR: an actual fmt::println call remains."
+
+            echo "ERROR: actual fmt::println call remains."
             exit 1
+
           fi
 
-          echo
-          echo "No fmt::println function calls remain."
+          echo "No actual fmt::println calls remain."
 
       # ============================================================
-      # 24. VERIFY MODERN UIKIT SOURCE
+      # 25. VERIFY MODERN UIKIT SOURCE
       # ============================================================
 
       - name: Verify modern UIKit source
@@ -1373,9 +1659,14 @@ jobs:
           echo "Modern UIKit source remains intact."
 
       # ============================================================
-      # 25. RESTORE PARTIAL XCODE BUILD
+      # 26. RESTORE PARTIAL XCODE BUILD
       #
-      # fast-v3 deliberately remains unchanged.
+      # IMPORTANT:
+      #
+      # fast-v3 is intentionally unchanged.
+      #
+      # This should recover the huge amount of C/C++ work already
+      # completed by the previous build.
       # ============================================================
 
       - name: Restore incremental Xcode build
@@ -1391,7 +1682,7 @@ jobs:
             blender-build-${{ env.BUILD_CACHE_VERSION }}-xcode26.3-${{ env.BLENDER_SHA }}-ios26.2-cyclesoff-
 
       # ============================================================
-      # 26. INSPECT RESTORED CACHE
+      # 27. INSPECT BUILD CACHE
       # ============================================================
 
       - name: Inspect incremental build cache
@@ -1420,7 +1711,7 @@ jobs:
 
           if [ -d "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" ]; then
 
-            echo "Restored host build tools:"
+            echo "Restored host tools:"
             du -sh \
               "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" \
               || true
@@ -1428,7 +1719,7 @@ jobs:
           fi
 
       # ============================================================
-      # 27. CONFIGURE
+      # 28. CONFIGURE
       #
       # Do NOT delete build_ios.
       # ============================================================
@@ -1458,7 +1749,7 @@ jobs:
           xcodebuild -version
 
           echo
-          echo "SDK:"
+          echo "iPhoneOS SDK:"
           xcrun \
             --sdk iphoneos \
             --show-sdk-version
@@ -1466,6 +1757,10 @@ jobs:
           echo
           echo "Deployment target:"
           echo "$IOS_DEPLOYMENT_TARGET"
+
+          echo
+          echo "LIBDIR:"
+          echo "$IOS_LIBDIR"
 
           cmake \
             -S . \
@@ -1489,7 +1784,7 @@ jobs:
             2>&1 | tee configure.log
 
       # ============================================================
-      # 28. VERIFY CONFIGURATION
+      # 29. VERIFY CONFIGURATION
       # ============================================================
 
       - name: Verify configuration
@@ -1525,72 +1820,55 @@ jobs:
           test "$PYTHON" = "ON"
 
       # ============================================================
-      # 29. FINAL ASSET CHECK
+      # 30. FINAL SOURCE RESOURCE CHECK
+      #
+      # Do this immediately before Xcode.
       # ============================================================
 
-      - name: Final pre-build asset check
+      - name: Final pre-build resource check
         run: |
           set -euxo pipefail
-
-          ICON="release/ios/Blender.app/Assets.xcassets/AppIcon.appiconset/blender_icon_1024x1024.png"
-
-          STARTUP="release/datafiles/startup.blend"
-
-          LFS_MAGIC='version https://git-lfs.github.com/spec/v1'
-
-          test -f "$ICON"
-          test -f "$STARTUP"
-
-          if head -c 200 "$ICON" \
-            | grep -q "$LFS_MAGIC"
-          then
-
-            echo "ERROR: AppIcon is an LFS pointer."
-            exit 1
-
-          fi
-
-          if head -c 200 "$STARTUP" \
-            | grep -q "$LFS_MAGIC"
-          then
-
-            echo "ERROR: startup.blend is an LFS pointer."
-            exit 1
-
-          fi
 
           python3 <<'PY'
           from pathlib import Path
 
-          root = Path(
-              "release/ios/Blender.app/"
-              "Assets.xcassets"
-          )
+          roots = [
+              Path("release/datafiles"),
+              Path("scripts"),
+              Path(
+                  "release/ios/Blender.app/"
+                  "Assets.xcassets"
+              ),
+          ]
 
           magic = (
               b"version "
               b"https://git-lfs.github.com/spec/v1"
           )
 
-          pointers = []
+          bad = []
 
-          for path in root.rglob("*"):
-              if not path.is_file():
+          for root in roots:
+              if not root.exists():
                   continue
 
-              try:
-                  if path.read_bytes()[:200].startswith(magic):
-                      pointers.append(path)
-              except OSError:
-                  pass
+              for path in root.rglob("*"):
+                  if not path.is_file():
+                      continue
 
-          if pointers:
+                  try:
+                      if path.read_bytes()[:200].startswith(magic):
+                          bad.append(path)
+                  except OSError:
+                      pass
+
+          if bad:
               print(
-                  "ERROR: LFS pointers remain "
-                  "inside the asset catalog:"
+                  "ERROR: packaged resources still contain "
+                  "Git LFS pointers:"
               )
 
-              for path in pointers:
+              for path in bad:
                   print(
                       " ",
                       path,
@@ -1599,14 +1877,15 @@ jobs:
               raise SystemExit(1)
 
           print(
-              "Pre-build asset check passed."
+              "All source resources required for packaging "
+              "are materialized."
           )
           PY
 
       # ============================================================
-      # 30. BUILD
+      # 31. BUILD BLENDER
       #
-      # Keep -jobs 3.
+      # Keep jobs=3.
       # ============================================================
 
       - name: Build Blender
@@ -1658,7 +1937,7 @@ jobs:
             echo "========================================"
 
             echo
-            echo "===== Compiler / linker / asset errors ====="
+            echo "===== Compiler / linker / resource errors ====="
 
             grep -n -C 30 \
               -E \
@@ -1759,39 +2038,6 @@ jobs:
             xcodebuild.log
 
       # ============================================================
-      # 31. SAVE PARTIAL/COMPLETE BUILD
-      # ============================================================
-
-      - name: Show incremental build size
-        if: always()
-        run: |
-          echo "===== build_ios ====="
-
-          du -sh \
-            "$GITHUB_WORKSPACE/build_ios" \
-            2>/dev/null \
-            || true
-
-          echo
-          echo "===== host tools ====="
-
-          du -sh \
-            "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" \
-            2>/dev/null \
-            || true
-
-      - name: Save incremental Xcode build
-        if: always()
-        continue-on-error: true
-        uses: actions/cache/save@v5
-        with:
-          path: |
-            ${{ github.workspace }}/build_ios
-            ${{ github.workspace }}/../build_ios/build_darwin_tools
-          key: >-
-            blender-build-${{ env.BUILD_CACHE_VERSION }}-xcode26.3-${{ env.BLENDER_SHA }}-ios26.2-cyclesoff-${{ github.run_id }}-${{ github.run_attempt }}
-
-      # ============================================================
       # 32. FIND Blender.app
       # ============================================================
 
@@ -1824,6 +2070,7 @@ jobs:
               || true
 
             exit 1
+
           fi
 
           echo "APP=$APP" \
@@ -1837,7 +2084,189 @@ jobs:
             "$APP"
 
       # ============================================================
-      # 33. VERIFY EXECUTABLE
+      # 33. REPAIR STALE LFS COPIES INSIDE Blender.app
+      #
+      # Why this is necessary:
+      #
+      # build_ios itself is cached. A previously generated app bundle
+      # can therefore contain old LFS pointer copies even though the
+      # source files are now materialized correctly.
+      #
+      # Mapping:
+      #
+      # Blender.app/Assets/5.2/datafiles/*
+      #   <- release/datafiles/*
+      #
+      # Blender.app/Assets/5.2/scripts/*
+      #   <- scripts/*
+      #
+      # If an app file is a pointer but its source is real, replace
+      # the stale app copy directly.
+      # ============================================================
+
+      - name: Repair and verify packaged app resources
+        run: |
+          set -euxo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+          import os
+          import shutil
+
+          app = Path(
+              os.environ["APP"]
+          )
+
+          base = (
+              app
+              / "Assets"
+              / "5.2"
+          )
+
+          magic = (
+              b"version "
+              b"https://git-lfs.github.com/spec/v1"
+          )
+
+          def is_pointer(path):
+              try:
+                  return (
+                      path.read_bytes()[:200]
+                      .startswith(magic)
+                  )
+              except OSError:
+                  return False
+
+          initial = [
+              path
+              for path in app.rglob("*")
+              if path.is_file()
+              and is_pointer(path)
+          ]
+
+          print(
+              "Pointers initially found inside Blender.app:",
+              len(initial),
+          )
+
+          repaired = 0
+
+          for destination in initial:
+
+              try:
+                  relative = destination.relative_to(
+                      base
+                  )
+              except ValueError:
+                  print(
+                      "Cannot map pointer outside Assets/5.2:",
+                      destination,
+                  )
+                  continue
+
+              parts = relative.parts
+
+              if not parts:
+                  continue
+
+              if parts[0] == "datafiles":
+
+                  source = (
+                      Path("release")
+                      / relative
+                  )
+
+              elif parts[0] == "scripts":
+
+                  source = Path(
+                      *parts
+                  )
+
+              else:
+
+                  print(
+                      "Unknown packaged resource root:",
+                      destination,
+                  )
+
+                  continue
+
+              if not source.is_file():
+
+                  print(
+                      "Mapped source does not exist:",
+                      source,
+                  )
+
+                  continue
+
+              if is_pointer(source):
+
+                  print(
+                      "Mapped source is STILL an LFS pointer:",
+                      source,
+                  )
+
+                  continue
+
+              print(
+                  "Repairing:"
+              )
+
+              print(
+                  "  destination:",
+                  destination,
+              )
+
+              print(
+                  "  source:     ",
+                  source,
+              )
+
+              shutil.copy2(
+                  source,
+                  destination,
+              )
+
+              repaired += 1
+
+          print()
+          print(
+              "Repaired stale packaged resources:",
+              repaired,
+          )
+
+          remaining = [
+              path
+              for path in app.rglob("*")
+              if path.is_file()
+              and is_pointer(path)
+          ]
+
+          if remaining:
+
+              print()
+              print(
+                  "ERROR: unresolved Git LFS pointer files "
+                  "remain in Blender.app:"
+              )
+
+              for path in remaining:
+                  print(
+                      " ",
+                      path,
+                  )
+
+              raise SystemExit(1)
+
+          print()
+          print(
+              "Blender.app contains no Git LFS pointers."
+          )
+          PY
+
+      # ============================================================
+      # 34. VERIFY EXECUTABLE
       # ============================================================
 
       - name: Verify Blender executable
@@ -1894,6 +2323,7 @@ jobs:
               || true
 
             exit 1
+
           fi
 
           echo "EXEC_NAME=$EXEC_NAME" \
@@ -1914,58 +2344,6 @@ jobs:
           lipo -info \
             "$EXECUTABLE" \
             || true
-
-      # ============================================================
-      # 34. VERIFY FINAL APP RESOURCES
-      # ============================================================
-
-      - name: Verify packaged app resources
-        run: |
-          set -euxo pipefail
-
-          python3 <<'PY'
-          from pathlib import Path
-          import os
-
-          app = Path(
-              os.environ["APP"]
-          )
-
-          magic = (
-              b"version "
-              b"https://git-lfs.github.com/spec/v1"
-          )
-
-          bad = []
-
-          for path in app.rglob("*"):
-              if not path.is_file():
-                  continue
-
-              try:
-                  if path.read_bytes()[:200].startswith(magic):
-                      bad.append(path)
-              except OSError:
-                  pass
-
-          if bad:
-              print(
-                  "ERROR: Git LFS pointer files "
-                  "were copied into Blender.app:"
-              )
-
-              for path in bad:
-                  print(
-                      " ",
-                      path,
-                  )
-
-              raise SystemExit(1)
-
-          print(
-              "No LFS pointers found inside Blender.app."
-          )
-          PY
 
       # ============================================================
       # 35. PACKAGE UNSIGNED IPA
@@ -2014,7 +2392,7 @@ jobs:
             | head -180
 
       # ============================================================
-      # 36. BUILD INFO
+      # 36. BUILD INFORMATION
       # ============================================================
 
       - name: Write build information
@@ -2073,7 +2451,7 @@ jobs:
             echo "Compatibility fixes:"
             echo "BundleKey fmt::join"
             echo "StringRef / BundleKey path fmt::join"
-            echo "Legacy fmt println compatibility in mesh_bevel.cc"
+            echo "legacy fmt println compatibility in mesh_bevel.cc"
             echo
 
             echo "UIKit compatibility patches:"
@@ -2085,15 +2463,18 @@ jobs:
             echo
 
             echo "Asset handling:"
-            echo "startup.blend materialized from Blender LFS"
-            echo "dead AppIcon LFS object replaced locally"
+            echo "release/datafiles LFS materialization"
+            echo "scripts LFS materialization"
+            echo "direct SHA-256 LFS object verification"
+            echo "dead AppIcon LFS replacement"
             echo "1024x1024 RGB fallback AppIcon"
-            echo "pre-build asset scan"
-            echo "post-build app scan"
+            echo "pre-build resource pointer scan"
+            echo "post-build stale resource repair"
+            echo "post-build pointer scan"
             echo
 
             echo "Speed features:"
-            echo "source asset cache"
+            echo "source resource cache"
             echo "iOS dependency cache"
             echo "macOS host dependency cache"
             echo "partial Xcode build cache"
@@ -2107,7 +2488,53 @@ jobs:
             build-revision.txt
 
       # ============================================================
-      # 37. UPLOAD IPA
+      # 37. SHOW BUILD CACHE SIZE
+      #
+      # Placed after successful resource repair so a successful run's
+      # cached app bundle contains the repaired resources too.
+      #
+      # Because it uses always(), this also runs after compile failure.
+      # ============================================================
+
+      - name: Show incremental build size
+        if: always()
+        run: |
+          echo "===== build_ios ====="
+
+          du -sh \
+            "$GITHUB_WORKSPACE/build_ios" \
+            2>/dev/null \
+            || true
+
+          echo
+          echo "===== host tools ====="
+
+          du -sh \
+            "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" \
+            2>/dev/null \
+            || true
+
+      # ============================================================
+      # 38. SAVE PARTIAL OR COMPLETE XCODE BUILD
+      #
+      # This executes after failures too.
+      #
+      # On successful runs it now captures the resource-repaired app.
+      # ============================================================
+
+      - name: Save incremental Xcode build
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ${{ github.workspace }}/build_ios
+            ${{ github.workspace }}/../build_ios/build_darwin_tools
+          key: >-
+            blender-build-${{ env.BUILD_CACHE_VERSION }}-xcode26.3-${{ env.BLENDER_SHA }}-ios26.2-cyclesoff-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # ============================================================
+      # 39. UPLOAD IPA
       # ============================================================
 
       - name: Upload Blender IPA
@@ -2124,7 +2551,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # 38. UPLOAD DIAGNOSTICS
+      # 40. ALWAYS UPLOAD DIAGNOSTICS
       # ============================================================
 
       - name: Upload build logs
