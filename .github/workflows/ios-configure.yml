@@ -39,7 +39,7 @@ jobs:
           echo "===== macOS ====="
           sw_vers
 
-          echo "===== Architecture ====="
+          echo "===== CPU ====="
           uname -m
 
           echo "===== Xcode ====="
@@ -49,9 +49,9 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           xcrun --sdk iphoneos --show-sdk-path
 
-          echo "===== Git commit ====="
-          git rev-parse HEAD
+          echo "===== Source ====="
           git branch --show-current
+          git rev-parse HEAD
 
           echo "===== Disk ====="
           df -h
@@ -77,7 +77,7 @@ jobs:
       # 4. BUILD TOOLS
       # ============================================================
 
-      - name: Install build tools
+      - name: Install tools
         run: |
           set -eux
 
@@ -88,10 +88,9 @@ jobs:
           cmake --version
           git lfs version
           python3 --version
-          curl --version | head -1
 
       # ============================================================
-      # 5. FETCH BLENDER startup.blend
+      # 5. FETCH startup.blend
       # ============================================================
 
       - name: Fetch Blender startup.blend
@@ -138,7 +137,7 @@ jobs:
             release/datafiles/startup.blend
 
       # ============================================================
-      # 6. DETERMINE PINNED LIBRARY COMMITS
+      # 6. DETERMINE EXACT PINNED LIBRARY REVISIONS
       # ============================================================
 
       - name: Determine library revisions
@@ -167,7 +166,7 @@ jobs:
       # 7. RESTORE LIBRARY CACHES
       # ============================================================
 
-      - name: Restore iOS library cache
+      - name: Restore iOS libraries cache
         id: ios-cache
         uses: actions/cache/restore@v4
         with:
@@ -176,7 +175,7 @@ jobs:
             .git/modules/lib/ios_arm64
           key: ios-arm64-${{ steps.libs.outputs.ios }}-v4
 
-      - name: Restore macOS library cache
+      - name: Restore macOS libraries cache
         id: mac-cache
         uses: actions/cache/restore@v4
         with:
@@ -186,7 +185,9 @@ jobs:
           key: macos-arm64-${{ steps.libs.outputs.mac }}-v4
 
       # ============================================================
-      # 8. FETCH IOS LIBRARIES
+      # 8. FETCH IOS PREBUILT LIBRARIES
+      #
+      # Salmazov uses update=none, so explicitly override it.
       # ============================================================
 
       - name: Fetch iOS prebuilt libraries
@@ -305,7 +306,7 @@ jobs:
             lib/macos_arm64
 
       # ============================================================
-      # 10. VERIFY LIBRARIES
+      # 10. VERIFY PREBUILT LIBRARIES
       # ============================================================
 
       - name: Verify prebuilt libraries
@@ -334,11 +335,11 @@ jobs:
           ls -lh \
             lib/ios_arm64/python/lib/libpython3.11.a
 
-          echo "===== Host Python ====="
+          echo "===== macOS host Python ====="
 
           echo "$HOST_PYTHON"
 
-          echo "===== Library sizes ====="
+          echo "===== Sizes ====="
 
           du -sh lib/ios_arm64
           du -sh lib/macos_arm64
@@ -347,7 +348,7 @@ jobs:
       # 11. SAVE LIBRARY CACHES
       # ============================================================
 
-      - name: Save iOS library cache
+      - name: Save iOS libraries cache
         if: steps.ios-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -356,7 +357,7 @@ jobs:
             .git/modules/lib/ios_arm64
           key: ios-arm64-${{ steps.libs.outputs.ios }}-v4
 
-      - name: Save macOS library cache
+      - name: Save macOS libraries cache
         if: steps.mac-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -366,217 +367,7 @@ jobs:
           key: macos-arm64-${{ steps.libs.outputs.mac }}-v4
 
       # ============================================================
-      # 12. INSTALL BLENDER'S EXACT FMT VERSION
-      #
-      # IMPORTANT:
-      #
-      # Do NOT use CPATH.
-      # Do NOT use CPLUS_INCLUDE_PATH.
-      # Do NOT append a global CMAKE_CXX_FLAGS -I.
-      #
-      # Those caused fmt 12.1 ranges.h to be mixed with
-      # OpenImageIO's older private fmt headers.
-      #
-      # Instead install matching fmt directly here:
-      #
-      # source/blender/blenlib/fmt/
-      #
-      # source/blender/blenlib is already one of Blender's normal
-      # include paths, before the OpenImageIO system include.
-      # ============================================================
-
-      - name: Vendor Blender matching fmt
-        run: |
-          set -euxo pipefail
-
-          VERSIONS_FILE="build_files/build_environment/cmake/versions.cmake"
-
-          test -f \
-            "$VERSIONS_FILE"
-
-          FMT_VERSION="$(
-            python3 <<'PY'
-          import re
-          from pathlib import Path
-
-          text = Path(
-              "build_files/build_environment/cmake/versions.cmake"
-          ).read_text()
-
-          match = re.search(
-              r'set\s*\(\s*FMT_VERSION\s+([^\s\)]+)',
-              text
-          )
-
-          if not match:
-              raise SystemExit(
-                  "Could not determine FMT_VERSION"
-              )
-
-          print(match.group(1))
-          PY
-          )"
-
-          if [ -z "$FMT_VERSION" ]; then
-            echo "ERROR: FMT_VERSION empty"
-            exit 1
-          fi
-
-          echo "===== Blender fmt version ====="
-          echo "$FMT_VERSION"
-
-          echo "$FMT_VERSION" \
-            > fmt-version.txt
-
-          rm -rf \
-            "$GITHUB_WORKSPACE/.deps/fmt"
-
-          rm -f \
-            "$GITHUB_WORKSPACE/.deps/fmt.tar.gz"
-
-          mkdir -p \
-            "$GITHUB_WORKSPACE/.deps/fmt"
-
-          curl \
-            --fail \
-            --location \
-            --retry 3 \
-            --retry-delay 2 \
-            "https://github.com/fmtlib/fmt/archive/refs/tags/${FMT_VERSION}.tar.gz" \
-            -o "$GITHUB_WORKSPACE/.deps/fmt.tar.gz"
-
-          tar \
-            -xzf "$GITHUB_WORKSPACE/.deps/fmt.tar.gz" \
-            -C "$GITHUB_WORKSPACE/.deps/fmt" \
-            --strip-components=1
-
-          SOURCE_FMT="$GITHUB_WORKSPACE/.deps/fmt/include/fmt"
-
-          test -f \
-            "$SOURCE_FMT/base.h"
-
-          test -f \
-            "$SOURCE_FMT/format.h"
-
-          test -f \
-            "$SOURCE_FMT/ranges.h"
-
-          # Remove any previous temporary vendored copy.
-          rm -rf \
-            source/blender/blenlib/fmt
-
-          # Put the entire matching fmt tree into an include directory
-          # Blender already places before OpenImageIO's private headers.
-          cp -R \
-            "$SOURCE_FMT" \
-            source/blender/blenlib/fmt
-
-          echo
-          echo "===== Vendored fmt ====="
-
-          ls \
-            source/blender/blenlib/fmt \
-            | head -30
-
-          echo
-          echo "===== fmt version macro ====="
-
-          grep -n \
-            '#define FMT_VERSION' \
-            source/blender/blenlib/fmt/base.h
-
-          echo
-          echo "===== Required fmt macros ====="
-
-          grep -n \
-            -E '#.*define FMT_(PRAGMA_CLANG|EXPORT)' \
-            source/blender/blenlib/fmt/base.h \
-            | head -20
-
-      # ============================================================
-      # 13. FORCE BLI_fmt.hh TO USE ITS LOCAL fmt/
-      #
-      # This is the important anti-mixing patch.
-      #
-      # <fmt/foo.h>
-      #
-      # becomes:
-      #
-      # "fmt/foo.h"
-      #
-      # Because fmt/ now lives directly beside BLI_fmt.hh.
-      # ============================================================
-
-      - name: Make BLI_fmt use vendored fmt
-        run: |
-          set -euxo pipefail
-
-          FILE="source/blender/blenlib/BLI_fmt.hh"
-
-          test -f "$FILE"
-
-          echo "===== Before ====="
-
-          grep -n \
-            'fmt/' \
-            "$FILE" \
-            || true
-
-          python3 <<'PY'
-          import re
-          from pathlib import Path
-
-          path = Path(
-              "source/blender/blenlib/BLI_fmt.hh"
-          )
-
-          text = path.read_text()
-
-          text, count = re.subn(
-              r'#include\s*<fmt/([^>]+)>',
-              r'#include "fmt/\1"',
-              text,
-          )
-
-          if count == 0:
-              print(
-                  "No angle-bracket fmt includes needed replacement."
-              )
-
-          path.write_text(text)
-
-          print(
-              f"Rewritten fmt include statements: {count}"
-          )
-          PY
-
-          echo
-          echo "===== After ====="
-
-          grep -n \
-            'fmt/' \
-            "$FILE" \
-            || true
-
-          if grep -q \
-            '#include <fmt/' \
-            "$FILE"
-          then
-            echo "ERROR: BLI_fmt.hh still contains external fmt include"
-            exit 1
-          fi
-
-          test -f \
-            source/blender/blenlib/fmt/format.h
-
-          test -f \
-            source/blender/blenlib/fmt/ranges.h
-
-          echo
-          echo "===== fmt header setup is self-contained ====="
-
-      # ============================================================
-      # 14. ADD SHLOK / NENDO TOUCHVIEW
+      # 12. ADD SHLOK / NENDO TOUCHVIEW
       # ============================================================
 
       - name: Add Shlok TouchView
@@ -618,7 +409,7 @@ jobs:
             /tmp/shlok/scripts/startup/touchview_ios_startup.py \
             scripts/startup/touchview_ios_startup.py
 
-          echo "===== TouchView files ====="
+          echo "===== TouchView ====="
 
           find \
             scripts/addons_core/touchview \
@@ -633,15 +424,231 @@ jobs:
             scripts/startup/touchview_ios_startup.py
 
       # ============================================================
-      # 15. CONFIGURE
+      # 13. IOS FMT COMPATIBILITY PATCH
       #
-      # NOTE:
+      # IMPORTANT:
       #
-      # No CPATH
-      # No CPLUS_INCLUDE_PATH
-      # No CMAKE_CXX_FLAGS fmt hack
+      # DO NOT install fmt 12.
+      # DO NOT modify BLI_fmt.hh.
+      # DO NOT use CPATH.
+      # DO NOT use CMAKE_CXX_FLAGS to inject fmt.
       #
-      # Correct fmt is now physically inside blenlib.
+      # OpenImageIO's iOS headers bring their own fmt implementation.
+      # Loading a second fmt version in the same translation unit
+      # causes the dna_verify.cc errors we just saw.
+      #
+      # Instead, avoid the two BundleKey fmt::join() expressions that
+      # need newer fmt range formatting.
+      # ============================================================
+
+      - name: Patch BundleKey formatting for iOS
+        run: |
+          set -euxo pipefail
+
+          python3 <<'PY'
+          import re
+          from pathlib import Path
+
+          # --------------------------------------------------------
+          # PATCH 1:
+          #
+          # node_geo_join_bundle.cc
+          #
+          # Replace:
+          #
+          # fmt::join(overridden_keys, ", ")
+          #
+          # with normal std::string construction.
+          # --------------------------------------------------------
+
+          join_file = Path(
+              "source/blender/nodes/geometry/nodes/"
+              "node_geo_join_bundle.cc"
+          )
+
+          if not join_file.is_file():
+              raise SystemExit(
+                  f"Missing source file: {join_file}"
+              )
+
+          text = join_file.read_text()
+
+          pattern = re.compile(
+              r'''
+              std::string\s+message\s*=\s*
+              fmt::format\(
+              \s*"\{\}:\s*\{\}"\s*,\s*
+              TIP_\("Duplicate\s+keys"\)\s*,\s*
+              fmt::join\(
+              \s*overridden_keys\s*,\s*",\s*"\s*
+              \)
+              \s*\)
+              \s*;
+              ''',
+              re.VERBOSE | re.MULTILINE,
+          )
+
+          replacement = '''std::string duplicate_keys;
+              for (const auto &key : overridden_keys) {
+                if (!duplicate_keys.empty()) {
+                  duplicate_keys += ", ";
+                }
+                duplicate_keys += key.ustr().string();
+              }
+
+              std::string message = TIP_("Duplicate keys");
+              if (!duplicate_keys.empty()) {
+                message += ": ";
+                message += duplicate_keys;
+              }'''
+
+          text, count = pattern.subn(
+              replacement,
+              text,
+              count=1,
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: Could not patch "
+                  "fmt::join(overridden_keys, \", \")"
+              )
+
+          join_file.write_text(text)
+
+          print(
+              "Patched node_geo_join_bundle.cc successfully"
+          )
+
+          # --------------------------------------------------------
+          # PATCH 2:
+          #
+          # geometry_nodes_bundle.cc
+          #
+          # Replace:
+          #
+          # return fmt::format("{}", fmt::join(path, "/"));
+          #
+          # BundleKey exposes ustr(), so just combine each key
+          # directly.
+          # --------------------------------------------------------
+
+          bundle_file = Path(
+              "source/blender/nodes/intern/"
+              "geometry_nodes_bundle.cc"
+          )
+
+          if not bundle_file.is_file():
+              raise SystemExit(
+                  f"Missing source file: {bundle_file}"
+              )
+
+          text = bundle_file.read_text()
+
+          old = (
+              '  return fmt::format("{}", '
+              'fmt::join(path, "/"));'
+          )
+
+          new = '''  std::string result;
+            for (const auto &key : path) {
+              if (!result.empty()) {
+                result += '/';
+              }
+              result += key.ustr().string();
+            }
+            return result;'''
+
+          if old not in text:
+              raise SystemExit(
+                  "ERROR: Could not find "
+                  'fmt::join(path, "/")'
+              )
+
+          text = text.replace(
+              old,
+              new,
+              1,
+          )
+
+          bundle_file.write_text(text)
+
+          print(
+              "Patched geometry_nodes_bundle.cc successfully"
+          )
+          PY
+
+          echo
+          echo "===== Verify patches ====="
+
+          if grep -R -n \
+            'fmt::join(overridden_keys' \
+            source/blender/nodes
+          then
+            echo "ERROR: overridden_keys fmt::join still exists"
+            exit 1
+          fi
+
+          if grep -R -n \
+            'fmt::join(path, "/")' \
+            source/blender/nodes
+          then
+            echo "ERROR: BundleKey path fmt::join still exists"
+            exit 1
+          fi
+
+          echo
+          echo "===== node_geo_join_bundle.cc ====="
+
+          grep -n -A 16 -B 5 \
+            'duplicate_keys' \
+            source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
+            || true
+
+          echo
+          echo "===== geometry_nodes_bundle.cc ====="
+
+          grep -n -A 14 -B 5 \
+            'std::string result' \
+            source/blender/nodes/intern/geometry_nodes_bundle.cc \
+            || true
+
+          echo
+          echo "===== Patch diff ====="
+
+          git diff -- \
+            source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
+            source/blender/nodes/intern/geometry_nodes_bundle.cc
+
+      # ============================================================
+      # 14. ENSURE OLD FMT-12 HACK IS COMPLETELY GONE
+      # ============================================================
+
+      - name: Verify single fmt environment
+        run: |
+          set -eux
+
+          if [ -d \
+            source/blender/blenlib/fmt
+          ]; then
+            echo "ERROR: local Blender fmt directory unexpectedly exists"
+            exit 1
+          fi
+
+          if [ -d \
+            .deps/fmt
+          ]; then
+            echo "ERROR: old .deps/fmt directory unexpectedly exists"
+            exit 1
+          fi
+
+          echo "Using only the fmt headers supplied with iOS dependencies."
+
+      # ============================================================
+      # 15. CONFIGURE PHYSICAL IOS BUILD
+      #
+      # Python ON because TouchView requires bpy.
+      # Cycles OFF because its CPU kernel failed earlier.
       # ============================================================
 
       - name: Configure Blender for iPad
@@ -698,13 +705,13 @@ jobs:
             || true
 
           echo
-          echo "===== Verify no old global fmt include hack ====="
+          echo "===== Verify no injected fmt ====="
 
-          if grep -q \
-            '\.deps/fmt/include' \
+          if grep -R \
+            '\.deps/fmt' \
             build_ios/CMakeCache.txt
           then
-            echo "ERROR: old .deps fmt compiler flag is still present"
+            echo "ERROR: old fmt override made it into CMake"
             exit 1
           fi
 
@@ -719,43 +726,63 @@ jobs:
             -list
 
       # ============================================================
-      # 17. BUILD HOST CROSS TOOLS
+      # 17. BUILD CROSS-COMPILE HOST TOOLS
       # ============================================================
 
       - name: Build Blender cross tools
         run: |
           set -o pipefail
 
-          if ! xcodebuild \
+          set +e
+
+          xcodebuild \
             -project build_ios/Blender.xcodeproj \
             -target blender_cross_tools_compile \
             -configuration Release \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            2>&1 | tee cross-tools.log
-          then
+            > cross-tools.log 2>&1
+
+          STATUS=$?
+
+          set -e
+
+          if [ "$STATUS" -ne 0 ]; then
 
             echo
             echo "================================================"
             echo "          CROSS TOOLS BUILD FAILED"
             echo "================================================"
 
-            grep -n -C 12 \
+            grep -n -C 15 \
               -E \
               '(^|[[:space:]])error:|fatal error:|Undefined symbols|duplicate symbol|ld: |clang: error:' \
               cross-tools.log \
-              | tail -800 \
+              | tail -1000 \
               || true
 
-            exit 1
+            echo
+            echo "===== Last 200 lines ====="
+
+            tail -200 \
+              cross-tools.log \
+              || true
+
+            exit "$STATUS"
           fi
 
           echo
           echo "===== CROSS TOOLS SUCCEEDED ====="
 
+          tail -40 \
+            cross-tools.log
+
       # ============================================================
-      # 18. BUILD BLENDER
+      # 18. BUILD BLENDER FOR PHYSICAL IPAD
+      #
+      # Full Xcode output is stored in xcodebuild.log.
+      # Only useful diagnostics are printed if it fails.
       # ============================================================
 
       - name: Build Blender for physical iPad
@@ -766,9 +793,11 @@ jobs:
             sysctl -n hw.ncpu
           )"
 
-          echo "Using $NCPU jobs"
+          echo "Using $NCPU build jobs"
 
-          if ! xcodebuild \
+          set +e
+
+          xcodebuild \
             -project build_ios/Blender.xcodeproj \
             -scheme blender \
             -configuration Release \
@@ -781,8 +810,13 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build \
-            2>&1 | tee xcodebuild.log
-          then
+            > xcodebuild.log 2>&1
+
+          STATUS=$?
+
+          set -e
+
+          if [ "$STATUS" -ne 0 ]; then
 
             echo
             echo "================================================"
@@ -790,48 +824,61 @@ jobs:
             echo "================================================"
             echo
 
-            echo "===== Compiler / linker errors ====="
+            echo "===== ALL COMPILER / LINKER ERRORS ====="
 
             grep -n -C 15 \
               -E \
-              '(^|[[:space:]])error:|fatal error:|Undefined symbols|duplicate symbol|ld: |clang: error:|Command .* failed' \
+              '(^|[[:space:]])error:|fatal error:|static assertion failed|Undefined symbols|duplicate symbol|ld: |clang: error:' \
               xcodebuild.log \
-              | tail -1200 \
+              > compiler-errors.txt \
               || true
 
-            echo
-            echo "===== fmt-related output ====="
+            cat \
+              compiler-errors.txt
 
-            grep -n -C 8 \
+            echo
+            echo "===== FMT REFERENCES ====="
+
+            grep -n -C 10 \
               -E \
-              'fmt/(base|core|format|ranges)\.h|FMT_(VERSION|EXPORT|PRAGMA)|fmt::' \
+              'fmt/(base|core|format|ranges|ostream|printf)\.h|FMT_[A-Z_]+|fmt::' \
               xcodebuild.log \
-              | tail -800 \
+              > fmt-errors.txt \
+              || true
+
+            tail -1000 \
+              fmt-errors.txt \
               || true
 
             echo
-            echo "===== Failed commands ====="
+            echo "===== FAILED COMMANDS ====="
 
             grep -n -A 100 \
               'The following build commands failed:' \
               xcodebuild.log \
-              | tail -250 \
+              > failed-commands.txt \
               || true
 
+            cat \
+              failed-commands.txt
+
             echo
-            echo "===== Last 300 lines ====="
+            echo "===== LAST 300 LINES ====="
 
             tail -300 \
               xcodebuild.log \
               || true
 
-            exit 1
+            exit "$STATUS"
           fi
 
           echo
           echo "================================================"
           echo "            BLENDER BUILD SUCCEEDED"
           echo "================================================"
+
+          tail -60 \
+            xcodebuild.log
 
       # ============================================================
       # 19. FIND BLENDER.APP
@@ -862,9 +909,11 @@ jobs:
 
           if [ -z "$APP" ] || [ ! -d "$APP" ]
           then
+
             echo "ERROR: Blender.app not found"
 
-            echo "===== Generated .app bundles ====="
+            echo
+            echo "===== Generated app bundles ====="
 
             find \
               build_ios \
@@ -880,23 +929,33 @@ jobs:
             >> "$GITHUB_ENV"
 
           echo "===== Blender.app ====="
+
           echo "$APP"
 
           du -sh \
             "$APP"
 
       # ============================================================
-      # 20. VERIFY BLENDER EXECUTABLE
+      # 20. VERIFY PHYSICAL ARM64 EXECUTABLE
       # ============================================================
 
-      - name: Verify physical iPad executable
+      - name: Verify Blender executable
         run: |
           set -eux
 
-          EXECUTABLE="$APP/Blender"
+          EXEC_NAME="$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleExecutable' \
+              "$APP/Info.plist" \
+              2>/dev/null \
+              || true
+          )"
 
-          if [ ! -f "$EXECUTABLE" ]
+          if [ -n "$EXEC_NAME" ] && \
+             [ -f "$APP/$EXEC_NAME" ]
           then
+            EXECUTABLE="$APP/$EXEC_NAME"
+          else
             EXECUTABLE="$(
               find \
                 "$APP" \
@@ -927,7 +986,7 @@ jobs:
             || true
 
       # ============================================================
-      # 21. VERIFY TOUCHVIEW
+      # 21. VERIFY TOUCHVIEW WAS PACKAGED
       # ============================================================
 
       - name: Verify TouchView inside Blender.app
@@ -973,33 +1032,16 @@ jobs:
             exit 1
           fi
 
+          echo
           echo "===== TouchView ====="
           echo "$TOUCHVIEW"
 
+          echo
           echo "===== Auto-start ====="
           echo "$STARTUP"
 
       # ============================================================
-      # 22. CLEAN UNNECESSARY PYTHON CONFIG FILES
-      # ============================================================
-
-      - name: Clean packaged app
-        run: |
-          set -eux
-
-          rm -rf \
-            "$APP/Assets/5.2/python/lib/python3.11/config-3.11-darwin" \
-            || true
-
-          rm -rf \
-            "$APP/Assets/5.2/python/lib/python3.13/config-3.13-darwin" \
-            || true
-
-          du -sh \
-            "$APP"
-
-      # ============================================================
-      # 23. PACKAGE IPA
+      # 22. PACKAGE UNSIGNED IPA
       # ============================================================
 
       - name: Package unsigned IPA
@@ -1032,7 +1074,7 @@ jobs:
             Blender-5.2-iPad-TouchView.ipa
 
           echo
-          echo "===== IPA structure ====="
+          echo "===== IPA root ====="
 
           unzip -l \
             Blender-5.2-iPad-TouchView.ipa \
@@ -1047,7 +1089,7 @@ jobs:
             | head -100
 
       # ============================================================
-      # 24. UPLOAD IPA
+      # 23. UPLOAD FINISHED IPA
       # ============================================================
 
       - name: Upload Blender IPA
@@ -1058,7 +1100,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # 25. ALWAYS UPLOAD LOGS
+      # 24. ALWAYS UPLOAD DIAGNOSTICS
       # ============================================================
 
       - name: Upload build logs
@@ -1067,13 +1109,15 @@ jobs:
         with:
           name: blender-ipad-build-logs
           path: |
-            fmt-version.txt
             source-lfs.log
             ios-lfs.log
             macos-lfs.log
             configure.log
             cross-tools.log
             xcodebuild.log
+            compiler-errors.txt
+            fmt-errors.txt
+            failed-commands.txt
             build_ios/CMakeCache.txt
           if-no-files-found: ignore
           retention-days: 7
