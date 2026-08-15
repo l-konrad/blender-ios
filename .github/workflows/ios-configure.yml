@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
 
       # ============================================================
-      # 2. CHECKOUT EXACT KNOWN SOURCE REVISION
+      # 2. FREEZE EXACT SOURCE REVISION
       # ============================================================
 
       - name: Checkout exact Blender source
@@ -83,7 +83,7 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path
 
           echo
-          echo "===== Source commit ====="
+          echo "===== Source ====="
           git rev-parse HEAD
 
           echo
@@ -177,7 +177,7 @@ jobs:
             release/datafiles/startup.blend
 
       # ============================================================
-      # 7. GET EXACT LIBRARY REVISIONS FROM SOURCE
+      # 7. GET EXACT LIBRARY REVISIONS
       # ============================================================
 
       - name: Determine library revisions
@@ -210,17 +210,17 @@ jobs:
           echo "ios_url=$IOS_URL" >> "$GITHUB_OUTPUT"
           echo "mac_url=$MAC_URL" >> "$GITHUB_OUTPUT"
 
-          echo "===== iOS libraries ====="
+          echo "===== iOS ====="
           echo "$IOS_URL"
           echo "$IOS_SHA"
 
           echo
-          echo "===== macOS libraries ====="
+          echo "===== macOS ====="
           echo "$MAC_URL"
           echo "$MAC_SHA"
 
       # ============================================================
-      # 8. VERIFY THE EXACT KNOWN LIBRARY PINS
+      # 8. VERIFY KNOWN LIBRARY PINS
       # ============================================================
 
       - name: Verify expected library revisions
@@ -244,7 +244,7 @@ jobs:
           test "$ACTUAL_MAC" = "$EXPECTED_MAC"
 
       # ============================================================
-      # 9. RESTORE IOS LIBRARY CACHE
+      # 9. CACHE IOS LIBRARIES
       # ============================================================
 
       - name: Cache iOS libraries
@@ -255,7 +255,7 @@ jobs:
           key: blender-ios-arm64-${{ steps.libs.outputs.ios_sha }}-v3
 
       # ============================================================
-      # 10. RESTORE MACOS LIBRARY CACHE
+      # 10. CACHE MACOS HOST LIBRARIES
       # ============================================================
 
       - name: Cache macOS libraries
@@ -266,7 +266,7 @@ jobs:
           key: blender-macos-arm64-${{ steps.libs.outputs.mac_sha }}-v3
 
       # ============================================================
-      # 11. FETCH IOS LIBRARIES IF NEEDED
+      # 11. FETCH IOS LIBRARIES
       # ============================================================
 
       - name: Fetch iOS libraries
@@ -319,7 +319,7 @@ jobs:
             lib/ios_arm64
 
       # ============================================================
-      # 12. FETCH MACOS LIBRARIES IF NEEDED
+      # 12. FETCH MACOS LIBRARIES
       # ============================================================
 
       - name: Fetch macOS libraries
@@ -404,7 +404,7 @@ jobs:
             lib/ios_arm64/python/lib/libpython3.11.a
 
           echo
-          echo "===== macOS host Python ====="
+          echo "===== Host Python ====="
 
           HOST_PYTHON="$(
             find \
@@ -432,23 +432,28 @@ jobs:
             lib/macos_arm64
 
       # ============================================================
-      # 14. APPLY ALL REQUIRED SOURCE COMPATIBILITY FIXES
+      # 14. APPLY SOURCE COMPATIBILITY FIXES
       #
-      # A:
-      #   BundleKey fmt::join
+      # FIX 1:
+      # Old fmt cannot format the BundleKey range.
       #
-      # B:
-      #   StringRef / BundleKey path fmt::join
+      # FIX 2:
+      # Old fmt cannot format the two path ranges.
       #
-      # C:
-      #   Xcode 16.4 UIWindowScene coordinateSpace compatibility
+      # FIX 3:
+      # Xcode 16.4 / iOS 18.5 does not provide:
+      #
+      #   UIWindowSceneGeometry.coordinateSpace
+      #
+      # Instead of fixing individual files one at a time, replace
+      # every use in the iOS GHOST Objective-C++ implementation.
       #
       # NO fmt replacement.
-      # NO CPATH hacks.
-      # NO changed dependency headers.
+      # NO CPATH.
+      # NO dependency header replacement.
       # ============================================================
 
-      - name: Apply source compatibility fixes
+      - name: Apply iOS source compatibility fixes
         run: |
           set -euxo pipefail
 
@@ -457,12 +462,9 @@ jobs:
 
 
           # ========================================================
-          # FIX A
+          # FIX 1
           #
           # node_geo_join_bundle.cc
-          #
-          # Old fmt from the iOS dependency set cannot directly
-          # format fmt::join(BundleKey range).
           # ========================================================
 
           file1 = Path(
@@ -496,13 +498,13 @@ jobs:
           count = text.count(needle)
 
           print(
-              "overridden_keys joins:",
+              "BundleKey overridden_keys joins:",
               count,
           )
 
           if count != 1:
               raise SystemExit(
-                  "ERROR: Expected exactly one "
+                  "ERROR: expected exactly 1 "
                   "overridden_keys fmt::join; "
                   f"found {count}"
               )
@@ -522,18 +524,16 @@ jobs:
 
 
           # ========================================================
-          # FIX B
+          # FIX 2
           #
           # geometry_nodes_bundle.cc
           #
-          # Exact source revision contains TWO:
+          # Exact source contains two fmt::join(path, "/").
           #
-          #   fmt::join(path, "/")
+          # The path element types differ, so support:
           #
-          # One path can contain StringRef.
-          # Another can contain BundleKey.
-          #
-          # The overloads below support both types.
+          #   StringRef
+          #   BundleKey
           # ========================================================
 
           file2 = Path(
@@ -587,14 +587,13 @@ jobs:
           count = text.count(needle)
 
           print(
-              "path joins:",
+              "geometry_nodes_bundle.cc path joins:",
               count,
           )
 
           if count != 2:
               raise SystemExit(
-                  "ERROR: Expected exactly two "
-                  "path fmt::join expressions; "
+                  "ERROR: expected exactly 2 path joins; "
                   f"found {count}"
               )
 
@@ -612,109 +611,145 @@ jobs:
 
 
           # ========================================================
-          # FIX C
+          # FIX 3
           #
-          # GHOST_WindowIOS.mm
+          # XCODE 16.4 / IOS 18.5 UIWINDOWSCENE COMPATIBILITY
           #
-          # Source:
+          # Previous build showed the same expression in:
           #
-          # windowScene.effectiveGeometry.coordinateSpace.bounds
+          #   GHOST_WindowIOS.mm
           #
-          # Xcode 16.4 / iPhoneOS 18.5 does not expose the
-          # coordinateSpace member on UIWindowSceneGeometry.
+          # Next build showed it again in:
           #
-          # UIWindowScene itself does expose coordinateSpace.
+          #   GHOST_SystemIOS.mm
+          #
+          # Fix ALL occurrences in iOS GHOST .mm files so we do not
+          # discover them one file at a time.
+          #
+          # Generic transformation:
+          #
+          #   scene.effectiveGeometry.coordinateSpace
+          #
+          # becomes:
+          #
+          #   scene.coordinateSpace
           # ========================================================
 
-          file3 = Path(
-              "intern/ghost/intern/"
-              "GHOST_WindowIOS.mm"
+          ghost_dir = Path(
+              "intern/ghost/intern"
           )
 
-          text = file3.read_text()
-
-          needle = (
-              "windowScene.effectiveGeometry."
-              "coordinateSpace.bounds"
+          ios_mm_files = sorted(
+              ghost_dir.glob("GHOST_*IOS.mm")
           )
 
-          replacement = (
-              "windowScene.coordinateSpace.bounds"
-          )
-
-          count = text.count(needle)
-
-          print(
-              "effectiveGeometry coordinateSpace uses:",
-              count,
-          )
-
-          if count != 1:
+          if not ios_mm_files:
               raise SystemExit(
-                  "ERROR: Expected exactly one "
-                  "effectiveGeometry.coordinateSpace use; "
-                  f"found {count}"
+                  "ERROR: no GHOST_*IOS.mm files found"
               )
 
-          text = text.replace(
-              needle,
-              replacement,
-              1,
-          )
+          old = ".effectiveGeometry.coordinateSpace"
+          new = ".coordinateSpace"
 
-          file3.write_text(text)
+          total = 0
+          changed_files = []
 
+          print()
           print(
-              "Patched:",
-              file3,
+              "Scanning iOS GHOST source for:",
+              old,
           )
+
+          for path in ios_mm_files:
+              text = path.read_text()
+
+              count = text.count(old)
+
+              if count == 0:
+                  continue
+
+              print(
+                  path,
+                  "occurrences:",
+                  count,
+              )
+
+              text = text.replace(
+                  old,
+                  new,
+              )
+
+              path.write_text(text)
+
+              total += count
+              changed_files.append(
+                  (path, count)
+              )
+
+          print()
+          print(
+              "Total UIWindowSceneGeometry "
+              "coordinateSpace replacements:",
+              total,
+          )
+
+          if total < 2:
+              raise SystemExit(
+                  "ERROR: expected at least the two known "
+                  "effectiveGeometry.coordinateSpace uses; "
+                  f"found {total}"
+              )
+
+          print()
+          print(
+              "Changed GHOST files:"
+          )
+
+          for path, count in changed_files:
+              print(
+                  " ",
+                  path,
+                  count,
+              )
 
 
           # ========================================================
           # VERIFY
+          #
+          # We deliberately check the entire iOS GHOST directory,
+          # not just the files already encountered by the compiler.
           # ========================================================
 
-          bad_patterns = [
-              (
-                  file1,
-                  'fmt::join(overridden_keys, ", ")',
-              ),
-              (
-                  file2,
-                  'fmt::join(path, "/")',
-              ),
-              (
-                  file3,
-                  'effectiveGeometry.coordinateSpace',
-              ),
-          ]
+          remaining_ghost = []
 
-          print()
-          print(
-              "===== Verify compatibility fixes ====="
-          )
+          for path in ios_mm_files:
+              text = path.read_text()
 
-          for path, pattern in bad_patterns:
-              remaining = (
-                  path.read_text().count(pattern)
-              )
-
-              print(
-                  path,
-                  pattern,
-                  "remaining:",
-                  remaining,
-              )
-
-              if remaining != 0:
-                  raise SystemExit(
-                      "ERROR: Compatibility fix "
-                      f"verification failed for {path}"
+              if old in text:
+                  remaining_ghost.append(
+                      str(path)
                   )
 
+          if remaining_ghost:
+              raise SystemExit(
+                  "ERROR: effectiveGeometry.coordinateSpace "
+                  "still exists in:\n"
+                  + "\n".join(remaining_ghost)
+              )
+
+          if 'fmt::join(overridden_keys, ", ")' in file1.read_text():
+              raise SystemExit(
+                  "ERROR: overridden_keys fmt::join remains"
+              )
+
+          if 'fmt::join(path, "/")' in file2.read_text():
+              raise SystemExit(
+                  "ERROR: path fmt::join remains"
+              )
+
           print()
           print(
-              "All compatibility fixes applied."
+              "All source compatibility fixes verified."
           )
           PY
 
@@ -726,21 +761,33 @@ jobs:
           git diff -- \
             source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
             source/blender/nodes/intern/geometry_nodes_bundle.cc \
-            intern/ghost/intern/GHOST_WindowIOS.mm
+            intern/ghost/intern
 
           git diff -- \
             source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
             source/blender/nodes/intern/geometry_nodes_bundle.cc \
-            intern/ghost/intern/GHOST_WindowIOS.mm \
+            intern/ghost/intern \
             > compatibility.patch
+
+          echo
+          echo "===== Verify no incompatible scene API remains ====="
+
+          if grep -RIn \
+            '\.effectiveGeometry\.coordinateSpace' \
+            intern/ghost/intern \
+            --include='GHOST_*IOS.mm'
+          then
+            echo "ERROR: incompatible UIWindowScene API remains"
+            exit 1
+          fi
+
+          echo "No effectiveGeometry.coordinateSpace calls remain."
 
       # ============================================================
       # 15. CONFIGURE BLENDER
       #
-      # Cycles OFF:
-      #   avoids the known cycles_kernel_cpu failure.
-      #
-      # Python remains ON.
+      # Python ON.
+      # Cycles OFF.
       # ============================================================
 
       - name: Configure Blender
@@ -863,7 +910,7 @@ jobs:
             echo "========================================"
 
             echo
-            echo "===== Compiler / linker errors ====="
+            echo "===== ALL compiler/linker errors ====="
 
             grep -n -C 30 \
               -E \
@@ -877,11 +924,11 @@ jobs:
               || true
 
             echo
-            echo "===== GHOST / UIKit diagnostics ====="
+            echo "===== iOS / GHOST diagnostics ====="
 
             grep -n -C 20 \
               -E \
-              'GHOST_WindowIOS|UIWindowScene|coordinateSpace|effectiveGeometry|UIKit' \
+              'GHOST_.*IOS|UIWindowScene|coordinateSpace|effectiveGeometry|UIKit' \
               xcodebuild.log \
               > ios-errors.txt \
               || true
@@ -905,9 +952,23 @@ jobs:
               || true
 
             echo
+            echo "===== Linker diagnostics ====="
+
+            grep -n -C 25 \
+              -E \
+              'Undefined symbols|duplicate symbol|library not found|framework not found|ld: |clang: error: linker' \
+              xcodebuild.log \
+              > linker-errors.txt \
+              || true
+
+            cat \
+              linker-errors.txt \
+              || true
+
+            echo
             echo "===== Failed commands ====="
 
-            grep -n -A 120 \
+            grep -n -A 150 \
               'The following build commands failed:' \
               xcodebuild.log \
               > failed-commands.txt \
@@ -918,9 +979,9 @@ jobs:
               || true
 
             echo
-            echo "===== Last 500 lines ====="
+            echo "===== Last 600 lines ====="
 
-            tail -500 \
+            tail -600 \
               xcodebuild.log \
               || true
 
@@ -1068,7 +1129,7 @@ jobs:
             "$APP" \
             -maxdepth 2 \
             -print \
-            | head -150
+            | head -200
 
       # ============================================================
       # 21. PACKAGE UNSIGNED IPA
@@ -1114,7 +1175,7 @@ jobs:
 
           unzip -l \
             Blender-5.2-iPad-Cycles-OFF.ipa \
-            | head -100
+            | head -120
 
       # ============================================================
       # 22. BUILD INFORMATION
@@ -1152,7 +1213,7 @@ jobs:
             echo "Compatibility fixes:"
             echo "BundleKey fmt::join"
             echo "StringRef / BundleKey path joins"
-            echo "Xcode 16.4 UIWindowScene coordinateSpace"
+            echo "All iOS GHOST effectiveGeometry.coordinateSpace uses"
           } > build-revision.txt
 
           cat \
@@ -1193,6 +1254,7 @@ jobs:
             compiler-errors.txt
             ios-errors.txt
             fmt-errors.txt
+            linker-errors.txt
             failed-commands.txt
             build_ios/CMakeCache.txt
           if-no-files-found: ignore
