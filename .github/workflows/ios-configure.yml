@@ -15,7 +15,7 @@ jobs:
 
     steps:
       # ============================================================
-      # 1. CHECKOUT
+      # 1. CHECKOUT SALMAZOV
       # ============================================================
 
       - name: Checkout Salmazov ios-new
@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
 
       # ============================================================
-      # 2. FREEZE EXACT SOURCE
+      # 2. CHECKOUT EXACT KNOWN SOURCE REVISION
       # ============================================================
 
       - name: Checkout exact Blender source
@@ -83,7 +83,7 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path
 
           echo
-          echo "===== Source ====="
+          echo "===== Source commit ====="
           git rev-parse HEAD
 
           echo
@@ -91,7 +91,7 @@ jobs:
           df -h
 
       # ============================================================
-      # 4. FREE SPACE
+      # 4. FREE DISK SPACE
       # ============================================================
 
       - name: Free disk space
@@ -110,7 +110,7 @@ jobs:
           df -h
 
       # ============================================================
-      # 5. TOOLS
+      # 5. INSTALL BUILD TOOLS
       # ============================================================
 
       - name: Install build tools
@@ -121,12 +121,19 @@ jobs:
 
           git lfs install
 
+          echo "===== CMake ====="
           cmake --version
+
+          echo
+          echo "===== Git LFS ====="
           git lfs version
+
+          echo
+          echo "===== Python ====="
           python3 --version
 
       # ============================================================
-      # 6. startup.blend
+      # 6. FETCH startup.blend
       # ============================================================
 
       - name: Fetch startup.blend
@@ -151,7 +158,8 @@ jobs:
           git lfs checkout \
             release/datafiles/startup.blend
 
-          test -f release/datafiles/startup.blend
+          test -f \
+            release/datafiles/startup.blend
 
           SIZE="$(
             stat -f '%z' \
@@ -165,10 +173,11 @@ jobs:
             exit 1
           fi
 
-          file release/datafiles/startup.blend
+          file \
+            release/datafiles/startup.blend
 
       # ============================================================
-      # 7. DETERMINE EXACT LIBRARY REVISIONS
+      # 7. GET EXACT LIBRARY REVISIONS FROM SOURCE
       # ============================================================
 
       - name: Determine library revisions
@@ -201,20 +210,20 @@ jobs:
           echo "ios_url=$IOS_URL" >> "$GITHUB_OUTPUT"
           echo "mac_url=$MAC_URL" >> "$GITHUB_OUTPUT"
 
-          echo "===== iOS ====="
+          echo "===== iOS libraries ====="
           echo "$IOS_URL"
           echo "$IOS_SHA"
 
           echo
-          echo "===== macOS ====="
+          echo "===== macOS libraries ====="
           echo "$MAC_URL"
           echo "$MAC_SHA"
 
       # ============================================================
-      # 8. VERIFY KNOWN PINS
+      # 8. VERIFY THE EXACT KNOWN LIBRARY PINS
       # ============================================================
 
-      - name: Verify library revisions
+      - name: Verify expected library revisions
         run: |
           set -eux
 
@@ -235,7 +244,7 @@ jobs:
           test "$ACTUAL_MAC" = "$EXPECTED_MAC"
 
       # ============================================================
-      # 9. CACHES
+      # 9. RESTORE IOS LIBRARY CACHE
       # ============================================================
 
       - name: Cache iOS libraries
@@ -245,6 +254,10 @@ jobs:
           path: lib/ios_arm64
           key: blender-ios-arm64-${{ steps.libs.outputs.ios_sha }}-v3
 
+      # ============================================================
+      # 10. RESTORE MACOS LIBRARY CACHE
+      # ============================================================
+
       - name: Cache macOS libraries
         id: mac-cache
         uses: actions/cache@v5
@@ -253,7 +266,7 @@ jobs:
           key: blender-macos-arm64-${{ steps.libs.outputs.mac_sha }}-v3
 
       # ============================================================
-      # 10. IOS LIBRARIES
+      # 11. FETCH IOS LIBRARIES IF NEEDED
       # ============================================================
 
       - name: Fetch iOS libraries
@@ -263,7 +276,8 @@ jobs:
         run: |
           set -euxo pipefail
 
-          rm -rf lib/ios_arm64
+          rm -rf \
+            lib/ios_arm64
 
           git clone \
             --filter=blob:none \
@@ -283,7 +297,11 @@ jobs:
             FETCH_HEAD
 
           EXPECTED="${{ steps.libs.outputs.ios_sha }}"
-          ACTUAL="$(git -C lib/ios_arm64 rev-parse HEAD)"
+
+          ACTUAL="$(
+            git -C lib/ios_arm64 \
+              rev-parse HEAD
+          )"
 
           echo "Expected: $EXPECTED"
           echo "Actual:   $ACTUAL"
@@ -297,10 +315,11 @@ jobs:
             lfs pull \
             2>&1 | tee ios-lfs.log
 
-          du -sh lib/ios_arm64
+          du -sh \
+            lib/ios_arm64
 
       # ============================================================
-      # 11. MACOS HOST LIBRARIES
+      # 12. FETCH MACOS LIBRARIES IF NEEDED
       # ============================================================
 
       - name: Fetch macOS libraries
@@ -310,7 +329,8 @@ jobs:
         run: |
           set -euxo pipefail
 
-          rm -rf lib/macos_arm64
+          rm -rf \
+            lib/macos_arm64
 
           git clone \
             --filter=blob:none \
@@ -330,7 +350,11 @@ jobs:
             FETCH_HEAD
 
           EXPECTED="${{ steps.libs.outputs.mac_sha }}"
-          ACTUAL="$(git -C lib/macos_arm64 rev-parse HEAD)"
+
+          ACTUAL="$(
+            git -C lib/macos_arm64 \
+              rev-parse HEAD
+          )"
 
           echo "Expected: $EXPECTED"
           echo "Actual:   $ACTUAL"
@@ -344,18 +368,26 @@ jobs:
             lfs pull \
             2>&1 | tee macos-lfs.log
 
-          du -sh lib/macos_arm64
+          du -sh \
+            lib/macos_arm64
 
       # ============================================================
-      # 12. VERIFY LIBRARIES
+      # 13. VERIFY LIBRARIES
       # ============================================================
 
       - name: Verify libraries
         run: |
           set -eux
 
-          IOS_ACTUAL="$(git -C lib/ios_arm64 rev-parse HEAD)"
-          MAC_ACTUAL="$(git -C lib/macos_arm64 rev-parse HEAD)"
+          IOS_ACTUAL="$(
+            git -C lib/ios_arm64 \
+              rev-parse HEAD
+          )"
+
+          MAC_ACTUAL="$(
+            git -C lib/macos_arm64 \
+              rev-parse HEAD
+          )"
 
           test "$IOS_ACTUAL" = \
             "${{ steps.libs.outputs.ios_sha }}"
@@ -363,16 +395,16 @@ jobs:
           test "$MAC_ACTUAL" = \
             "${{ steps.libs.outputs.mac_sha }}"
 
+          echo "===== iOS Python ====="
+
           test -f \
             lib/ios_arm64/python/lib/libpython3.11.a
-
-          echo "===== iOS Python ====="
 
           ls -lh \
             lib/ios_arm64/python/lib/libpython3.11.a
 
           echo
-          echo "===== Host Python ====="
+          echo "===== macOS host Python ====="
 
           HOST_PYTHON="$(
             find \
@@ -383,33 +415,40 @@ jobs:
               -print -quit
           )"
 
-          test -n "$HOST_PYTHON"
+          if [ -z "$HOST_PYTHON" ]; then
+            echo "ERROR: host Python not found"
+            exit 1
+          fi
 
           echo "$HOST_PYTHON"
 
           echo
-          echo "===== Sizes ====="
+          echo "===== Library sizes ====="
 
-          du -sh lib/ios_arm64
-          du -sh lib/macos_arm64
+          du -sh \
+            lib/ios_arm64
+
+          du -sh \
+            lib/macos_arm64
 
       # ============================================================
-      # 13. SOURCE COMPATIBILITY PATCHES
+      # 14. APPLY ALL REQUIRED SOURCE COMPATIBILITY FIXES
       #
-      # PATCH A:
-      #   Old fmt cannot format BundleKey join.
+      # A:
+      #   BundleKey fmt::join
       #
-      # PATCH B:
-      #   Old fmt cannot format the path joins.
+      # B:
+      #   StringRef / BundleKey path fmt::join
       #
-      # PATCH C:
-      #   Xcode 16.4 / iOS 18.5 does not expose
-      #   effectiveGeometry.coordinateSpace.
+      # C:
+      #   Xcode 16.4 UIWindowScene coordinateSpace compatibility
       #
-      # We use UIWindowScene.coordinateSpace for this SDK instead.
+      # NO fmt replacement.
+      # NO CPATH hacks.
+      # NO changed dependency headers.
       # ============================================================
 
-      - name: Apply iOS compatibility patches
+      - name: Apply source compatibility fixes
         run: |
           set -euxo pipefail
 
@@ -418,8 +457,12 @@ jobs:
 
 
           # ========================================================
-          # PATCH A
+          # FIX A
+          #
           # node_geo_join_bundle.cc
+          #
+          # Old fmt from the iOS dependency set cannot directly
+          # format fmt::join(BundleKey range).
           # ========================================================
 
           file1 = Path(
@@ -439,7 +482,8 @@ jobs:
                     result += ", ";
                   }
 
-                  const auto key_ref = key.ustr().ref();
+                  const auto key_ref =
+                      key.ustr().ref();
 
                   result.append(
                       key_ref.data(),
@@ -451,15 +495,16 @@ jobs:
 
           count = text.count(needle)
 
-          echo_count = (
-              "node_geo_join_bundle.cc occurrences: "
-              + str(count)
+          print(
+              "overridden_keys joins:",
+              count,
           )
-          print(echo_count)
 
           if count != 1:
               raise SystemExit(
-                  "ERROR: expected exactly one overridden_keys join"
+                  "ERROR: Expected exactly one "
+                  "overridden_keys fmt::join; "
+                  f"found {count}"
               )
 
           text = text.replace(
@@ -470,17 +515,25 @@ jobs:
 
           file1.write_text(text)
 
-          print("Patched:", file1)
+          print(
+              "Patched:",
+              file1,
+          )
 
 
           # ========================================================
-          # PATCH B
+          # FIX B
+          #
           # geometry_nodes_bundle.cc
           #
-          # This exact source contains two path joins.
+          # Exact source revision contains TWO:
           #
-          # The ranges use different element types, so the helper
-          # supports both StringRef and BundleKey.
+          #   fmt::join(path, "/")
+          #
+          # One path can contain StringRef.
+          # Another can contain BundleKey.
+          #
+          # The overloads below support both types.
           # ========================================================
 
           file2 = Path(
@@ -534,13 +587,14 @@ jobs:
           count = text.count(needle)
 
           print(
-              "geometry_nodes_bundle.cc path joins:",
+              "path joins:",
               count,
           )
 
           if count != 2:
               raise SystemExit(
-                  "ERROR: expected exactly two path joins; "
+                  "ERROR: Expected exactly two "
+                  "path fmt::join expressions; "
                   f"found {count}"
               )
 
@@ -552,53 +606,53 @@ jobs:
           file2.write_text(text)
 
           print(
-              "Patched all path joins:",
+              "Patched:",
               file2,
           )
 
 
           # ========================================================
-          # PATCH C
+          # FIX C
+          #
           # GHOST_WindowIOS.mm
           #
-          # Current Salmazov source uses:
+          # Source:
           #
           # windowScene.effectiveGeometry.coordinateSpace.bounds
           #
-          # Xcode 16.4 / iPhoneOS 18.5 headers do not provide
-          # coordinateSpace on UIWindowSceneGeometry.
+          # Xcode 16.4 / iPhoneOS 18.5 does not expose the
+          # coordinateSpace member on UIWindowSceneGeometry.
           #
-          # UIWindowScene.coordinateSpace is available in this SDK.
+          # UIWindowScene itself does expose coordinateSpace.
           # ========================================================
 
           file3 = Path(
-              "intern/ghost/intern/GHOST_WindowIOS.mm"
+              "intern/ghost/intern/"
+              "GHOST_WindowIOS.mm"
           )
 
           text = file3.read_text()
 
           needle = (
-              "return "
               "windowScene.effectiveGeometry."
-              "coordinateSpace.bounds;"
+              "coordinateSpace.bounds"
           )
 
-          replacement = '''/* Xcode 16.4 / iPhoneOS 18.5 compatibility.
-       * UIWindowSceneGeometry::coordinateSpace is unavailable in
-       * this SDK, so use the scene coordinate space directly. */
-      return windowScene.coordinateSpace.bounds;'''
+          replacement = (
+              "windowScene.coordinateSpace.bounds"
+          )
 
           count = text.count(needle)
 
           print(
-              "GHOST effectiveGeometry coordinateSpace occurrences:",
+              "effectiveGeometry coordinateSpace uses:",
               count,
           )
 
           if count != 1:
               raise SystemExit(
-                  "ERROR: expected exactly one "
-                  "effectiveGeometry.coordinateSpace expression; "
+                  "ERROR: Expected exactly one "
+                  "effectiveGeometry.coordinateSpace use; "
                   f"found {count}"
               )
 
@@ -611,16 +665,16 @@ jobs:
           file3.write_text(text)
 
           print(
-              "Patched Xcode 16.4 UIWindowScene compatibility:",
+              "Patched:",
               file3,
           )
 
 
           # ========================================================
-          # VERIFY ALL PATCHES
+          # VERIFY
           # ========================================================
 
-          checks = [
+          bad_patterns = [
               (
                   file1,
                   'fmt::join(overridden_keys, ", ")',
@@ -636,30 +690,37 @@ jobs:
           ]
 
           print()
-          print("===== Patch verification =====")
+          print(
+              "===== Verify compatibility fixes ====="
+          )
 
-          for path, bad_text in checks:
-              remaining = path.read_text().count(bad_text)
+          for path, pattern in bad_patterns:
+              remaining = (
+                  path.read_text().count(pattern)
+              )
 
               print(
                   path,
+                  pattern,
                   "remaining:",
-                  repr(bad_text),
                   remaining,
               )
 
               if remaining != 0:
                   raise SystemExit(
-                      f"ERROR: patch verification failed: {path}"
+                      "ERROR: Compatibility fix "
+                      f"verification failed for {path}"
                   )
 
           print()
-          print("All compatibility patches applied successfully.")
+          print(
+              "All compatibility fixes applied."
+          )
           PY
 
           echo
           echo "========================================"
-          echo "SOURCE DIFF"
+          echo "COMPATIBILITY DIFF"
           echo "========================================"
 
           git diff -- \
@@ -673,24 +734,21 @@ jobs:
             intern/ghost/intern/GHOST_WindowIOS.mm \
             > compatibility.patch
 
-          echo
-          echo "===== compatibility.patch ====="
-
-          cat compatibility.patch
-
       # ============================================================
-      # 14. CONFIGURE
+      # 15. CONFIGURE BLENDER
       #
-      # Keep Python ON.
-      # Keep Cycles OFF.
-      # Do not replace fmt.
+      # Cycles OFF:
+      #   avoids the known cycles_kernel_cpu failure.
+      #
+      # Python remains ON.
       # ============================================================
 
       - name: Configure Blender
         run: |
           set -euxo pipefail
 
-          rm -rf build_ios
+          rm -rf \
+            build_ios
 
           IOS_LIBDIR="$GITHUB_WORKSPACE/lib/ios_arm64"
 
@@ -724,14 +782,14 @@ jobs:
             2>&1 | tee configure.log
 
       # ============================================================
-      # 15. VERIFY CONFIG
+      # 16. VERIFY CONFIGURATION
       # ============================================================
 
       - name: Verify configuration
         run: |
           set -eux
 
-          echo "===== Important options ====="
+          echo "===== Important CMake options ====="
 
           grep -E \
             'WITH_CYCLES:|WITH_PYTHON:|WITH_PYTHON_NUMPY:|WITH_AUDASPACE:|WITH_METAL_BACKEND:' \
@@ -754,11 +812,18 @@ jobs:
           echo "WITH_CYCLES=$CYCLES"
           echo "WITH_PYTHON=$PYTHON"
 
-          test "$CYCLES" = "OFF"
-          test "$PYTHON" = "ON"
+          if [ "$CYCLES" != "OFF" ]; then
+            echo "ERROR: Cycles is not OFF"
+            exit 1
+          fi
+
+          if [ "$PYTHON" != "ON" ]; then
+            echo "ERROR: Python is not ON"
+            exit 1
+          fi
 
       # ============================================================
-      # 16. BUILD
+      # 17. BUILD
       # ============================================================
 
       - name: Build Blender for physical iOS
@@ -798,51 +863,59 @@ jobs:
             echo "========================================"
 
             echo
-            echo "===== ALL compiler/linker errors ====="
+            echo "===== Compiler / linker errors ====="
 
-            grep -n -C 25 \
+            grep -n -C 30 \
               -E \
               '(^|[[:space:]])error:|fatal error:|static assertion failed|Undefined symbols|duplicate symbol|ld: |clang: error:' \
               xcodebuild.log \
               > compiler-errors.txt \
               || true
 
-            cat compiler-errors.txt || true
+            cat \
+              compiler-errors.txt \
+              || true
 
             echo
-            echo "===== iOS / Ghost diagnostics ====="
+            echo "===== GHOST / UIKit diagnostics ====="
 
-            grep -n -C 15 \
+            grep -n -C 20 \
               -E \
               'GHOST_WindowIOS|UIWindowScene|coordinateSpace|effectiveGeometry|UIKit' \
               xcodebuild.log \
               > ios-errors.txt \
               || true
 
-            cat ios-errors.txt || true
+            cat \
+              ios-errors.txt \
+              || true
 
             echo
             echo "===== fmt / Bundle diagnostics ====="
 
-            grep -n -C 12 \
+            grep -n -C 15 \
               -E \
               'fmt::|BundleKey|StringRef|fallback_formatter|formattable|OpenImageIO/detail/fmt' \
               xcodebuild.log \
               > fmt-errors.txt \
               || true
 
-            cat fmt-errors.txt || true
+            cat \
+              fmt-errors.txt \
+              || true
 
             echo
             echo "===== Failed commands ====="
 
-            grep -n -A 100 \
+            grep -n -A 120 \
               'The following build commands failed:' \
               xcodebuild.log \
               > failed-commands.txt \
               || true
 
-            cat failed-commands.txt || true
+            cat \
+              failed-commands.txt \
+              || true
 
             echo
             echo "===== Last 500 lines ====="
@@ -863,7 +936,7 @@ jobs:
             xcodebuild.log
 
       # ============================================================
-      # 17. FIND APP
+      # 18. FIND Blender.app
       # ============================================================
 
       - name: Find Blender.app
@@ -878,8 +951,14 @@ jobs:
               -print -quit
           )"
 
-          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+          if [ -z "$APP" ] || \
+             [ ! -d "$APP" ]
+          then
+
             echo "ERROR: Blender.app not found"
+
+            echo
+            echo "===== Generated apps ====="
 
             find \
               build_ios \
@@ -891,22 +970,25 @@ jobs:
             exit 1
           fi
 
-          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "APP=$APP" \
+            >> "$GITHUB_ENV"
 
           echo "===== Blender.app ====="
           echo "$APP"
 
-          du -sh "$APP"
+          du -sh \
+            "$APP"
 
       # ============================================================
-      # 18. VERIFY EXECUTABLE
+      # 19. VERIFY EXECUTABLE
       # ============================================================
 
       - name: Verify Blender executable
         run: |
           set -eux
 
-          test -f "$APP/Info.plist"
+          test -f \
+            "$APP/Info.plist"
 
           EXEC_NAME="$(
             /usr/libexec/PlistBuddy \
@@ -921,14 +1003,17 @@ jobs:
           if [ -n "$EXEC_NAME" ] && \
              [ -f "$APP/$EXEC_NAME" ]
           then
+
             EXECUTABLE="$APP/$EXEC_NAME"
 
           elif [ -f "$APP/Blender" ]
           then
+
             EXEC_NAME="Blender"
             EXECUTABLE="$APP/Blender"
 
           else
+
             echo "ERROR: Blender executable not found"
 
             find \
@@ -940,25 +1025,61 @@ jobs:
             exit 1
           fi
 
-          echo "EXEC_NAME=$EXEC_NAME" >> "$GITHUB_ENV"
-          echo "EXECUTABLE=$EXECUTABLE" >> "$GITHUB_ENV"
+          echo "EXEC_NAME=$EXEC_NAME" \
+            >> "$GITHUB_ENV"
 
-          echo "===== Binary ====="
-          file "$EXECUTABLE"
+          echo "EXECUTABLE=$EXECUTABLE" \
+            >> "$GITHUB_ENV"
+
+          echo
+          echo "===== Executable ====="
+          echo "$EXECUTABLE"
+
+          echo
+          echo "===== File type ====="
+
+          file \
+            "$EXECUTABLE"
 
           echo
           echo "===== Architecture ====="
-          lipo -info "$EXECUTABLE" || true
+
+          lipo -info \
+            "$EXECUTABLE" \
+            || true
 
       # ============================================================
-      # 19. PACKAGE IPA
+      # 20. INSPECT APP
+      # ============================================================
+
+      - name: Inspect Blender.app
+        run: |
+          set -eux
+
+          echo "===== App size ====="
+
+          du -sh \
+            "$APP"
+
+          echo
+          echo "===== App contents ====="
+
+          find \
+            "$APP" \
+            -maxdepth 2 \
+            -print \
+            | head -150
+
+      # ============================================================
+      # 21. PACKAGE UNSIGNED IPA
       # ============================================================
 
       - name: Package unsigned IPA
         run: |
           set -eux
 
-          rm -rf package
+          rm -rf \
+            package
 
           mkdir -p \
             package/Payload
@@ -988,12 +1109,15 @@ jobs:
           ls -lh \
             Blender-5.2-iPad-Cycles-OFF.ipa
 
+          echo
+          echo "===== IPA contents ====="
+
           unzip -l \
             Blender-5.2-iPad-Cycles-OFF.ipa \
             | head -100
 
       # ============================================================
-      # 20. BUILD INFO
+      # 22. BUILD INFORMATION
       # ============================================================
 
       - name: Write build information
@@ -1005,7 +1129,8 @@ jobs:
             echo
 
             echo "Source commit:"
-            git rev-parse HEAD 2>/dev/null || true
+            git rev-parse HEAD \
+              2>/dev/null || true
             echo
 
             echo "iOS libraries:"
@@ -1026,14 +1151,15 @@ jobs:
 
             echo "Compatibility fixes:"
             echo "BundleKey fmt::join"
-            echo "StringRef fmt::join"
+            echo "StringRef / BundleKey path joins"
             echo "Xcode 16.4 UIWindowScene coordinateSpace"
           } > build-revision.txt
 
-          cat build-revision.txt
+          cat \
+            build-revision.txt
 
       # ============================================================
-      # 21. UPLOAD IPA
+      # 23. UPLOAD IPA
       # ============================================================
 
       - name: Upload Blender IPA
@@ -1048,7 +1174,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # 22. ALWAYS UPLOAD LOGS
+      # 24. ALWAYS UPLOAD LOGS
       # ============================================================
 
       - name: Upload build logs
