@@ -15,7 +15,7 @@ jobs:
 
     steps:
       # ============================================================
-      # 1. CHECKOUT SALMAZOV IOS-NEW
+      # 1. CHECKOUT SALMAZOV
       # ============================================================
 
       - name: Checkout Salmazov ios-new
@@ -29,13 +29,10 @@ jobs:
           persist-credentials: false
 
       # ============================================================
-      # 2. PIN EXACT SOURCE COMMIT
-      #
-      # Exact commit from our last build:
-      # 1e391616fea93b759ac5ad73cdbbbcb7f2fa08e6
+      # 2. CHECKOUT EXACT SOURCE REVISION
       # ============================================================
 
-      - name: Checkout exact Blender source commit
+      - name: Checkout exact Blender source
         run: |
           set -euxo pipefail
 
@@ -86,11 +83,7 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path
 
           echo
-          echo "===== Git ====="
-          git --version
-
-          echo
-          echo "===== Source commit ====="
+          echo "===== Source ====="
           git rev-parse HEAD
 
           echo
@@ -128,22 +121,15 @@ jobs:
 
           git lfs install
 
-          echo "===== CMake ====="
           cmake --version
-
-          echo
-          echo "===== Git LFS ====="
           git lfs version
-
-          echo
-          echo "===== Python ====="
           python3 --version
 
       # ============================================================
       # 6. FETCH startup.blend
       # ============================================================
 
-      - name: Fetch Blender startup.blend
+      - name: Fetch startup.blend
         run: |
           set -euxo pipefail
 
@@ -165,8 +151,7 @@ jobs:
           git lfs checkout \
             release/datafiles/startup.blend
 
-          test -f \
-            release/datafiles/startup.blend
+          test -f release/datafiles/startup.blend
 
           SIZE="$(
             stat -f '%z' \
@@ -180,11 +165,10 @@ jobs:
             exit 1
           fi
 
-          file \
-            release/datafiles/startup.blend
+          file release/datafiles/startup.blend
 
       # ============================================================
-      # 7. DETERMINE PINNED LIBRARY COMMITS
+      # 7. DETERMINE EXACT LIBRARY REVISIONS
       # ============================================================
 
       - name: Determine library revisions
@@ -217,23 +201,20 @@ jobs:
           echo "ios_url=$IOS_URL" >> "$GITHUB_OUTPUT"
           echo "mac_url=$MAC_URL" >> "$GITHUB_OUTPUT"
 
-          echo
-          echo "===== iOS libraries ====="
+          echo "===== iOS ====="
           echo "$IOS_URL"
           echo "$IOS_SHA"
 
           echo
-          echo "===== macOS libraries ====="
+          echo "===== macOS ====="
           echo "$MAC_URL"
           echo "$MAC_SHA"
 
       # ============================================================
-      # 8. VERIFY LIBRARY COMMITS
-      #
-      # These are the exact revisions from our last run.
+      # 8. VERIFY EXACT KNOWN LIBRARY REVISIONS
       # ============================================================
 
-      - name: Verify expected library revisions
+      - name: Verify library revisions
         run: |
           set -eux
 
@@ -397,16 +378,16 @@ jobs:
           test "$MAC_ACTUAL" = \
             "${{ steps.libs.outputs.mac_sha }}"
 
-          echo "===== iOS Python ====="
-
           test -f \
             lib/ios_arm64/python/lib/libpython3.11.a
+
+          echo "===== iOS Python ====="
 
           ls -lh \
             lib/ios_arm64/python/lib/libpython3.11.a
 
           echo
-          echo "===== macOS host Python ====="
+          echo "===== Host Python ====="
 
           HOST_PYTHON="$(
             find \
@@ -418,33 +399,36 @@ jobs:
           )"
 
           if [ -z "$HOST_PYTHON" ]; then
-            echo "ERROR: host Python missing"
+            echo "ERROR: macOS host Python missing"
             exit 1
           fi
 
           echo "$HOST_PYTHON"
 
           echo
-          echo "===== Library sizes ====="
+          echo "===== Sizes ====="
 
           du -sh lib/ios_arm64
           du -sh lib/macos_arm64
 
       # ============================================================
-      # 14. PATCH BundleKey / OLD FMT COMPATIBILITY
+      # 14. PATCH OLD FMT / BundleKey COMPATIBILITY
       #
-      # Expected in this exact source revision:
+      # IMPORTANT:
       #
-      # node_geo_join_bundle.cc:
-      #   1 x fmt::join(overridden_keys, ", ")
+      # node_geo_join_bundle.cc contains BundleKey.
       #
-      # geometry_nodes_bundle.cc:
-      #   2 x fmt::join(path, "/")
+      # geometry_nodes_bundle.cc has TWO fmt::join(path, "/")
+      # expressions, but the element type is not identical:
       #
-      # ALL THREE are patched.
+      # one can contain StringRef
+      # one can contain BundleKey
       #
-      # fmt itself is NOT replaced.
-      # OpenImageIO is NOT modified.
+      # The previous patch treated BOTH as BundleKey and therefore
+      # attempted key.ustr() on a StringRef.
+      #
+      # This replacement uses an overloaded local helper that knows
+      # how to append BOTH types.
       # ============================================================
 
       - name: Patch BundleKey formatting
@@ -454,8 +438,13 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
 
+
           # ========================================================
+          # PATCH 1
+          #
           # node_geo_join_bundle.cc
+          #
+          # overridden_keys contains BundleKey values.
           # ========================================================
 
           file1 = Path(
@@ -463,12 +452,13 @@ jobs:
               "node_geo_join_bundle.cc"
           )
 
-          text = file1.read_text()
+          text1 = file1.read_text()
 
           needle1 = 'fmt::join(overridden_keys, ", ")'
 
           replacement1 = '''[&]() {
                 std::string result;
+
                 for (const auto &key : overridden_keys) {
                   if (!result.empty()) {
                     result += ", ";
@@ -484,7 +474,7 @@ jobs:
                 return result;
               }()'''
 
-          count1 = text.count(needle1)
+          count1 = text1.count(needle1)
 
           print(
               "node_geo_join_bundle.cc occurrences:",
@@ -493,27 +483,34 @@ jobs:
 
           if count1 != 1:
               raise SystemExit(
-                  "ERROR: Expected exactly 1 "
+                  "ERROR: expected exactly 1 "
                   "fmt::join(overridden_keys, \", \")"
               )
 
-          text = text.replace(
+          text1 = text1.replace(
               needle1,
               replacement1,
+              1,
           )
 
-          file1.write_text(text)
+          file1.write_text(text1)
 
-          print(
-              "Patched:",
-              file1,
-          )
+          print("Patched:", file1)
+
 
           # ========================================================
+          # PATCH 2
+          #
           # geometry_nodes_bundle.cc
           #
-          # IMPORTANT:
-          # This exact revision contains TWO occurrences.
+          # There are TWO path joins.
+          #
+          # Crucially, path elements can be either:
+          #
+          #   blender::StringRef
+          #   BundleKey
+          #
+          # So provide overloads for BOTH.
           # ========================================================
 
           file2 = Path(
@@ -521,11 +518,34 @@ jobs:
               "geometry_nodes_bundle.cc"
           )
 
-          text = file2.read_text()
+          text2 = file2.read_text()
 
           needle2 = 'fmt::join(path, "/")'
 
           replacement2 = '''[&]() {
+                struct PathPartAppender {
+                  static void append(
+                      std::string &result,
+                      const StringRef value)
+                  {
+                    result.append(
+                        value.data(),
+                        value.size());
+                  }
+
+                  static void append(
+                      std::string &result,
+                      const BundleKey &value)
+                  {
+                    const auto value_ref =
+                        value.ustr().ref();
+
+                    result.append(
+                        value_ref.data(),
+                        value_ref.size());
+                  }
+                };
+
                 std::string result;
 
                 for (const auto &key : path) {
@@ -533,17 +553,15 @@ jobs:
                     result += '/';
                   }
 
-                  const auto key_ref = key.ustr().ref();
-
-                  result.append(
-                      key_ref.data(),
-                      key_ref.size());
+                  PathPartAppender::append(
+                      result,
+                      key);
                 }
 
                 return result;
               }()'''
 
-          count2 = text.count(needle2)
+          count2 = text2.count(needle2)
 
           print(
               "geometry_nodes_bundle.cc occurrences:",
@@ -552,24 +570,25 @@ jobs:
 
           if count2 != 2:
               raise SystemExit(
-                  "ERROR: Expected exactly 2 "
+                  "ERROR: expected exactly 2 "
                   "fmt::join(path, \"/\") expressions, "
                   f"found {count2}"
               )
 
-          text = text.replace(
+          text2 = text2.replace(
               needle2,
               replacement2,
           )
 
-          file2.write_text(text)
+          file2.write_text(text2)
 
           print(
               "Patched all",
               count2,
-              "occurrences in:",
+              "path joins in:",
               file2,
           )
+
 
           # ========================================================
           # VERIFY
@@ -596,17 +615,18 @@ jobs:
 
           if remaining1 != 0:
               raise SystemExit(
-                  "ERROR: overridden_keys join remains"
+                  "ERROR: overridden_keys fmt::join remains"
               )
 
           if remaining2 != 0:
               raise SystemExit(
-                  "ERROR: path joins remain"
+                  "ERROR: path fmt::join remains"
               )
 
           print()
           print(
-              "BundleKey compatibility patch successful."
+              "BundleKey/StringRef compatibility "
+              "patch successful."
           )
           PY
 
@@ -619,14 +639,19 @@ jobs:
             source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
             source/blender/nodes/intern/geometry_nodes_bundle.cc
 
+          git diff -- \
+            source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
+            source/blender/nodes/intern/geometry_nodes_bundle.cc \
+            > compatibility.patch
+
           echo
-          echo "===== Verify joins are gone ====="
+          echo "===== Verify original joins are gone ====="
 
           if grep -RIn \
             'fmt::join(overridden_keys' \
             source/blender/nodes
           then
-            echo "ERROR: overridden_keys fmt::join still exists"
+            echo "ERROR: overridden_keys fmt::join remains"
             exit 1
           fi
 
@@ -634,7 +659,7 @@ jobs:
             'fmt::join(path, "/")' \
             source/blender/nodes/intern/geometry_nodes_bundle.cc
           then
-            echo "ERROR: path fmt::join still exists"
+            echo "ERROR: path fmt::join remains"
             exit 1
           fi
 
@@ -642,17 +667,16 @@ jobs:
           echo "Patch verification passed."
 
       # ============================================================
-      # 15. CONFIGURE BLENDER
+      # 15. CONFIGURE
       #
-      # Cycles stays OFF.
+      # Cycles remains OFF because it is a separate known failure.
       #
-      # No fmt override.
-      # No CPATH.
-      # No CPLUS_INCLUDE_PATH.
-      # No downloaded fmt.
+      # NO fmt replacement.
+      # NO CPATH.
+      # NO custom fmt headers.
       # ============================================================
 
-      - name: Configure Blender for iOS
+      - name: Configure Blender
         run: |
           set -euxo pipefail
 
@@ -693,11 +717,11 @@ jobs:
       # 16. VERIFY CONFIGURATION
       # ============================================================
 
-      - name: Verify build configuration
+      - name: Verify configuration
         run: |
           set -eux
 
-          echo "===== Important options ====="
+          echo "===== Important CMake options ====="
 
           grep -E \
             'WITH_CYCLES:|WITH_PYTHON:|WITH_PYTHON_NUMPY:|WITH_AUDASPACE:|WITH_METAL_BACKEND:' \
@@ -743,7 +767,11 @@ jobs:
             sysctl -n hw.ncpu
           )"
 
-          echo "Build jobs: $NCPU"
+          echo "========================================"
+          echo "BUILD BLENDER"
+          echo "========================================"
+
+          echo "Jobs: $NCPU"
 
           set +e
 
@@ -776,7 +804,7 @@ jobs:
             echo
             echo "===== Compiler/linker errors ====="
 
-            grep -n -C 20 \
+            grep -n -C 25 \
               -E \
               '(^|[[:space:]])error:|fatal error:|static assertion failed|Undefined symbols|duplicate symbol|ld: |clang: error:' \
               xcodebuild.log \
@@ -788,11 +816,11 @@ jobs:
               || true
 
             echo
-            echo "===== fmt / BundleKey errors ====="
+            echo "===== fmt / Bundle diagnostics ====="
 
-            grep -n -C 10 \
+            grep -n -C 12 \
               -E \
-              'fmt::|BundleKey|fallback_formatter|formattable|OpenImageIO/detail/fmt' \
+              'fmt::|BundleKey|StringRef|fallback_formatter|formattable|OpenImageIO/detail/fmt' \
               xcodebuild.log \
               > fmt-errors.txt \
               || true
@@ -815,9 +843,9 @@ jobs:
               || true
 
             echo
-            echo "===== Last 400 lines ====="
+            echo "===== Last 500 lines ====="
 
-            tail -400 \
+            tail -500 \
               xcodebuild.log \
               || true
 
@@ -829,7 +857,7 @@ jobs:
           echo "BUILD SUCCEEDED"
           echo "========================================"
 
-          tail -100 \
+          tail -120 \
             xcodebuild.log
 
       # ============================================================
@@ -848,9 +876,12 @@ jobs:
               -print -quit
           )"
 
-          if [ -z "$APP" ]; then
+          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
 
-            echo "ERROR: Blender.app was not found"
+            echo "ERROR: Blender.app not found"
+
+            echo
+            echo "===== All .app bundles ====="
 
             find \
               build_ios \
@@ -865,23 +896,22 @@ jobs:
           echo "APP=$APP" \
             >> "$GITHUB_ENV"
 
+          echo
           echo "===== Blender.app ====="
 
           echo "$APP"
 
-          du -sh \
-            "$APP"
+          du -sh "$APP"
 
       # ============================================================
-      # 19. VERIFY EXECUTABLE
+      # 19. VERIFY APP
       # ============================================================
 
       - name: Verify Blender executable
         run: |
           set -eux
 
-          test -f \
-            "$APP/Info.plist"
+          test -f "$APP/Info.plist"
 
           EXEC_NAME="$(
             /usr/libexec/PlistBuddy \
@@ -908,8 +938,14 @@ jobs:
           else
 
             echo "ERROR: Blender executable not found"
-            exit 1
 
+            find \
+              "$APP" \
+              -maxdepth 1 \
+              -type f \
+              -print
+
+            exit 1
           fi
 
           echo "EXEC_NAME=$EXEC_NAME" \
@@ -918,21 +954,39 @@ jobs:
           echo "EXECUTABLE=$EXECUTABLE" \
             >> "$GITHUB_ENV"
 
-          echo
-          echo "===== Binary ====="
+          echo "===== Executable ====="
+          echo "$EXECUTABLE"
 
-          file \
-            "$EXECUTABLE"
+          echo
+          echo "===== File ====="
+          file "$EXECUTABLE"
 
           echo
           echo "===== Architecture ====="
-
-          lipo -info \
-            "$EXECUTABLE" \
-            || true
+          lipo -info "$EXECUTABLE" || true
 
       # ============================================================
-      # 20. PACKAGE IPA
+      # 20. INSPECT APP
+      # ============================================================
+
+      - name: Inspect Blender.app
+        run: |
+          set -eux
+
+          echo "===== App size ====="
+          du -sh "$APP"
+
+          echo
+          echo "===== Top-level contents ====="
+
+          find \
+            "$APP" \
+            -maxdepth 2 \
+            -print \
+            | head -150
+
+      # ============================================================
+      # 21. PACKAGE UNSIGNED IPA
       # ============================================================
 
       - name: Package unsigned IPA
@@ -962,7 +1016,9 @@ jobs:
             Blender-5.2-iPad-Cycles-OFF.ipa
 
           echo
-          echo "===== IPA ====="
+          echo "========================================"
+          echo "IPA CREATED"
+          echo "========================================"
 
           ls -lh \
             Blender-5.2-iPad-Cycles-OFF.ipa
@@ -972,13 +1028,13 @@ jobs:
 
           unzip -l \
             Blender-5.2-iPad-Cycles-OFF.ipa \
-            | head -80
+            | head -100
 
       # ============================================================
-      # 21. WRITE BUILD INFORMATION
+      # 22. BUILD INFORMATION
       # ============================================================
 
-      - name: Write build revision
+      - name: Write build information
         if: always()
         run: |
           {
@@ -1006,16 +1062,15 @@ jobs:
             echo "WITH_CYCLES=OFF"
             echo
 
-            echo "Compatibility patches:"
-            echo "1 x overridden_keys BundleKey fmt::join"
-            echo "2 x path BundleKey fmt::join"
+            echo "Compatibility fixes:"
+            echo "BundleKey fmt::join"
+            echo "StringRef fmt::join"
           } > build-revision.txt
 
-          cat \
-            build-revision.txt
+          cat build-revision.txt
 
       # ============================================================
-      # 22. UPLOAD IPA
+      # 23. UPLOAD IPA
       # ============================================================
 
       - name: Upload Blender IPA
@@ -1026,10 +1081,11 @@ jobs:
           path: |
             Blender-5.2-iPad-Cycles-OFF.ipa
             build-revision.txt
+            compatibility.patch
           retention-days: 30
 
       # ============================================================
-      # 23. ALWAYS UPLOAD LOGS
+      # 24. ALWAYS UPLOAD LOGS
       # ============================================================
 
       - name: Upload build logs
@@ -1039,6 +1095,7 @@ jobs:
           name: blender-ios-build-logs
           path: |
             build-revision.txt
+            compatibility.patch
             source-lfs.log
             ios-lfs.log
             macos-lfs.log
