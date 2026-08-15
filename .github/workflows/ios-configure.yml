@@ -23,8 +23,7 @@ jobs:
 
       IOS_DEPLOYMENT_TARGET: "26.2"
 
-      # DO NOT change this for small compatibility patches.
-      # Keeping fast-v3 allows us to restore the previous partial build.
+      # Keep this unchanged so previous partial builds remain reusable.
       BUILD_CACHE_VERSION: fast-v3
 
     steps:
@@ -66,9 +65,6 @@ jobs:
 
       # ============================================================
       # 3. NORMALIZE SOURCE TIMESTAMPS
-      #
-      # Helps Xcode reuse restored object files instead of deciding
-      # every source file was freshly checked out.
       # ============================================================
 
       - name: Normalize source timestamps
@@ -141,6 +137,7 @@ jobs:
           if [ ! -d "$XCODE" ]; then
             echo "ERROR: Xcode 26.3 is not installed."
             echo
+            echo "Installed Xcodes:"
             ls -d /Applications/Xcode*.app || true
             exit 1
           fi
@@ -163,7 +160,7 @@ jobs:
           xcode-select -p
 
       # ============================================================
-      # 5. VERIFY IOS 26 SDK
+      # 5. VERIFY IOS SDK
       # ============================================================
 
       - name: Verify iOS SDK
@@ -296,7 +293,7 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
 
       # ============================================================
-      # 8. REQUIRED TOOLS
+      # 8. REQUIRED BUILD TOOLS
       # ============================================================
 
       - name: Ensure build tools
@@ -321,7 +318,10 @@ jobs:
 
           git lfs install
 
+          echo
           cmake --version
+
+          echo
           git lfs version
 
       # ============================================================
@@ -350,8 +350,6 @@ jobs:
 
       # ============================================================
       # 10. RESTORE SOURCE ASSETS
-      #
-      # Contains startup.blend plus our locally generated AppIcon.
       # ============================================================
 
       - name: Restore source assets
@@ -364,7 +362,7 @@ jobs:
           key: blender-source-assets-${{ env.BLENDER_SHA }}-fallback-icon-v3
 
       # ============================================================
-      # 11. PREPARE DATAFILES AND APP ICON
+      # 11. PREPARE DATAFILES + APP ICON
       # ============================================================
 
       - name: Prepare required source assets
@@ -385,9 +383,10 @@ jobs:
           test -d "$ICON_DIR"
           test -f "$CONTENTS"
 
-          # --------------------------------------------------------
-          # Check normal Blender datafiles.
-          # --------------------------------------------------------
+          echo
+          echo "========================================"
+          echo "CHECK DATAFILE POINTERS"
+          echo "========================================"
 
           python3 <<'PY' > /tmp/datafile-lfs-pointers.txt
           from pathlib import Path
@@ -412,9 +411,6 @@ jobs:
                   pass
           PY
 
-          echo
-          echo "===== Datafile LFS pointers ====="
-
           cat \
             /tmp/datafile-lfs-pointers.txt \
             || true
@@ -422,7 +418,7 @@ jobs:
           if [ -s /tmp/datafile-lfs-pointers.txt ]; then
 
             echo
-            echo "Fetching Blender datafiles..."
+            echo "Fetching Blender release/datafiles..."
 
             git lfs fetch \
               blender-lfs \
@@ -435,10 +431,15 @@ jobs:
               release/datafiles \
               || true
 
+          else
+
+            echo
+            echo "No datafile pointers require fetching."
+
           fi
 
           # --------------------------------------------------------
-          # startup.blend must definitely be real.
+          # startup.blend is required.
           # --------------------------------------------------------
 
           STARTUP="release/datafiles/startup.blend"
@@ -460,16 +461,13 @@ jobs:
 
             git lfs checkout \
               release/datafiles/startup.blend
-
           fi
 
           if head -c 200 "$STARTUP" \
             | grep -q "$LFS_MAGIC"
           then
-
             echo "ERROR: startup.blend is still an LFS pointer."
             exit 1
-
           fi
 
           STARTUP_SIZE="$(
@@ -483,8 +481,6 @@ jobs:
 
           # --------------------------------------------------------
           # Dead Salmazov AppIcon LFS object.
-          #
-          # Generate a valid local RGB icon if needed.
           # --------------------------------------------------------
 
           echo
@@ -495,15 +491,19 @@ jobs:
           NEED_ICON=0
 
           if [ ! -f "$ICON" ]; then
+
             NEED_ICON=1
 
           elif [ ! -s "$ICON" ]; then
+
             NEED_ICON=1
 
           elif head -c 200 "$ICON" \
             | grep -q "$LFS_MAGIC"
           then
+
             NEED_ICON=1
+
           fi
 
           if [ "$NEED_ICON" -eq 1 ]; then
@@ -521,7 +521,6 @@ jobs:
           width = 1024
           height = 1024
 
-          # Blender-like orange.
           pixel = bytes(
               (
                   243,
@@ -564,7 +563,7 @@ jobs:
                   width,
                   height,
                   8,
-                  2,  # RGB, no alpha
+                  2,
                   0,
                   0,
                   0,
@@ -596,7 +595,7 @@ jobs:
           )
 
           print(
-              "Size:",
+              "Bytes:",
               len(png),
           )
           PY
@@ -645,7 +644,7 @@ jobs:
           fi
 
           # --------------------------------------------------------
-          # Validate Contents.json references our filename.
+          # Verify Contents.json.
           # --------------------------------------------------------
 
           python3 <<'PY'
@@ -672,13 +671,13 @@ jobs:
               if item.get("filename")
           }
 
-          print(
-              "Referenced icon files:",
-              filenames,
-          )
-
           expected = (
               "blender_icon_1024x1024.png"
+          )
+
+          print(
+              "Referenced AppIcon files:",
+              filenames,
           )
 
           if expected not in filenames:
@@ -689,7 +688,7 @@ jobs:
           PY
 
           # --------------------------------------------------------
-          # Asset catalog must contain zero LFS pointers.
+          # No pointers may remain in Assets.xcassets.
           # --------------------------------------------------------
 
           python3 <<'PY'
@@ -720,7 +719,7 @@ jobs:
           if bad:
               print(
                   "ERROR: LFS pointers remain "
-                  "in Assets.xcassets:"
+                  "inside Assets.xcassets:"
               )
 
               for path in bad:
@@ -751,7 +750,7 @@ jobs:
           key: blender-source-assets-${{ env.BLENDER_SHA }}-fallback-icon-v3
 
       # ============================================================
-      # 13. DETERMINE PREBUILT LIBRARY REVISIONS
+      # 13. DETERMINE LIBRARY REVISIONS
       # ============================================================
 
       - name: Determine library revisions
@@ -917,7 +916,7 @@ jobs:
           key: blender-ioslib-${{ steps.libs.outputs.ios_sha }}-v3
 
       # ============================================================
-      # 19. RESTORE MACOS HOST LIBRARIES
+      # 19. RESTORE MACOS LIBRARIES
       # ============================================================
 
       - name: Restore macOS libraries
@@ -928,7 +927,7 @@ jobs:
           key: blender-maclib-${{ steps.libs.outputs.mac_sha }}-v3
 
       # ============================================================
-      # 20. FETCH MACOS HOST LIBRARIES
+      # 20. FETCH MACOS LIBRARIES
       # ============================================================
 
       - name: Fetch macOS libraries
@@ -1026,11 +1025,8 @@ jobs:
       # 23. APPLY FMT COMPATIBILITY PATCHES
       #
       # 1. BundleKey fmt::join
-      # 2. StringRef / BundleKey path joins
-      # 3. Legacy fmt without fmt::println in mesh_bevel.cc
-      #
-      # No fmt replacement.
-      # No UIKit source patches.
+      # 2. StringRef / BundleKey path fmt::join
+      # 3. fmt::println compatibility for old iOS fmt
       # ============================================================
 
       - name: Apply fmt compatibility fixes
@@ -1044,8 +1040,6 @@ jobs:
 
           # ========================================================
           # PATCH 1
-          #
-          # node_geo_join_bundle.cc
           # ========================================================
 
           file1 = Path(
@@ -1105,8 +1099,6 @@ jobs:
 
           # ========================================================
           # PATCH 2
-          #
-          # geometry_nodes_bundle.cc
           # ========================================================
 
           file2 = Path(
@@ -1186,17 +1178,8 @@ jobs:
           # ========================================================
           # PATCH 3
           #
-          # mesh_bevel.cc
-          #
-          # The iOS dependency's fmt implementation has fmt::print,
-          # but does not expose fmt::println.
-          #
-          # Preserve println semantics using:
-          #
-          #   fmt::print(...);
-          #   fmt::print("\\n");
-          #
-          # through a local compatibility macro.
+          # The iOS fmt dependency exposes fmt::print but not the
+          # newer println API. Preserve newline behaviour locally.
           # ========================================================
 
           file3 = Path(
@@ -1206,31 +1189,31 @@ jobs:
 
           text = file3.read_text()
 
-          old = "fmt::println("
+          old_call = "fmt::println("
 
           println_count = text.count(
-              old
+              old_call
           )
 
           print(
-              "mesh_bevel fmt::println calls:",
+              "mesh_bevel fmt println calls:",
               println_count,
           )
 
           if println_count < 19:
               raise SystemExit(
                   "ERROR: expected at least 19 "
-                  "fmt::println calls; "
+                  "println calls; "
                   f"found {println_count}"
               )
 
           macro = r'''
 
           /*
-           * Compatibility for the older fmt version shipped in the
-           * iOS prebuilt dependency set.
+           * Compatibility for the older fmt library in the
+           * prebuilt iOS dependency set.
            *
-           * Preserve fmt::println semantics using fmt::print.
+           * Preserve println behaviour using fmt::print.
            */
           #ifndef BLENDER_FMT_PRINTLN_COMPAT
           #  define BLENDER_FMT_PRINTLN_COMPAT(...) \
@@ -1242,7 +1225,6 @@ jobs:
 
           '''
 
-          # Insert after the final #include line.
           includes = list(
               re.finditer(
                   r"(?m)^#include[^\n]*\n",
@@ -1252,8 +1234,8 @@ jobs:
 
           if not includes:
               raise SystemExit(
-                  "ERROR: could not locate include block "
-                  "in mesh_bevel.cc"
+                  "ERROR: could not find the "
+                  "mesh_bevel include block"
               )
 
           insert_at = includes[-1].end()
@@ -1265,7 +1247,7 @@ jobs:
           )
 
           text = text.replace(
-              old,
+              old_call,
               "BLENDER_FMT_PRINTLN_COMPAT(",
           )
 
@@ -1283,7 +1265,7 @@ jobs:
               in file1.read_text()
           ):
               raise SystemExit(
-                  "ERROR: BundleKey fmt::join remains"
+                  "ERROR: BundleKey join remains"
               )
 
           if (
@@ -1291,7 +1273,7 @@ jobs:
               in file2.read_text()
           ):
               raise SystemExit(
-                  "ERROR: path fmt::join remains"
+                  "ERROR: path join remains"
               )
 
           patched3 = file3.read_text()
@@ -1306,7 +1288,7 @@ jobs:
 
           print()
           print(
-              "Remaining fmt::println:",
+              "Remaining fmt::println calls:",
               remaining,
           )
 
@@ -1317,14 +1299,14 @@ jobs:
 
           if remaining != 0:
               raise SystemExit(
-                  "ERROR: fmt::println remains "
-                  "in mesh_bevel.cc"
+                  "ERROR: actual fmt::println call remains"
               )
 
+          # One occurrence is the macro declaration itself.
           if compat_calls < println_count:
               raise SystemExit(
-                  "ERROR: not all fmt::println "
-                  "calls were converted"
+                  "ERROR: not all println calls "
+                  "were converted"
               )
 
           print()
@@ -1350,17 +1332,25 @@ jobs:
             > compatibility.patch
 
           echo
-          echo "===== Verify no mesh_bevel fmt::println remains ====="
+          echo "===== Verify no real fmt::println calls remain ====="
 
-          if grep -n \
-            'fmt::println' \
+          # IMPORTANT:
+          #
+          # Search specifically for a CALL.
+          #
+          # The previous version searched merely for "fmt::println",
+          # which also matched a harmless explanatory comment.
+          #
+          if grep -nF \
+            'fmt::println(' \
             source/blender/geometry/intern/mesh_bevel.cc
           then
-            echo "ERROR: fmt::println remains."
+            echo "ERROR: an actual fmt::println call remains."
             exit 1
           fi
 
-          echo "fmt compatibility patches complete."
+          echo
+          echo "No fmt::println function calls remain."
 
       # ============================================================
       # 24. VERIFY MODERN UIKIT SOURCE
@@ -1385,11 +1375,7 @@ jobs:
       # ============================================================
       # 25. RESTORE PARTIAL XCODE BUILD
       #
-      # IMPORTANT:
-      # fast-v3 is intentionally unchanged.
-      #
-      # This should restore most of the successful compilation from
-      # the previous run.
+      # fast-v3 deliberately remains unchanged.
       # ============================================================
 
       - name: Restore incremental Xcode build
@@ -1419,7 +1405,7 @@ jobs:
 
           if [ -d "$GITHUB_WORKSPACE/build_ios" ]; then
 
-            echo "build_ios:"
+            echo "Restored build_ios:"
             du -sh \
               "$GITHUB_WORKSPACE/build_ios" \
               || true
@@ -1434,7 +1420,7 @@ jobs:
 
           if [ -d "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" ]; then
 
-            echo "Host build tools:"
+            echo "Restored host build tools:"
             du -sh \
               "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" \
               || true
@@ -1444,8 +1430,7 @@ jobs:
       # ============================================================
       # 27. CONFIGURE
       #
-      # DO NOT remove build_ios.
-      # CMake updates the restored tree.
+      # Do NOT delete build_ios.
       # ============================================================
 
       - name: Configure Blender
@@ -1540,7 +1525,7 @@ jobs:
           test "$PYTHON" = "ON"
 
       # ============================================================
-      # 29. FINAL PRE-BUILD ASSET CHECK
+      # 29. FINAL ASSET CHECK
       # ============================================================
 
       - name: Final pre-build asset check
@@ -1559,15 +1544,19 @@ jobs:
           if head -c 200 "$ICON" \
             | grep -q "$LFS_MAGIC"
           then
+
             echo "ERROR: AppIcon is an LFS pointer."
             exit 1
+
           fi
 
           if head -c 200 "$STARTUP" \
             | grep -q "$LFS_MAGIC"
           then
+
             echo "ERROR: startup.blend is an LFS pointer."
             exit 1
+
           fi
 
           python3 <<'PY'
@@ -1598,7 +1587,7 @@ jobs:
           if pointers:
               print(
                   "ERROR: LFS pointers remain "
-                  "in the asset catalog:"
+                  "inside the asset catalog:"
               )
 
               for path in pointers:
@@ -1617,7 +1606,7 @@ jobs:
       # ============================================================
       # 30. BUILD
       #
-      # Keep jobs=3 because it has been stable.
+      # Keep -jobs 3.
       # ============================================================
 
       - name: Build Blender
@@ -1770,9 +1759,7 @@ jobs:
             xcodebuild.log
 
       # ============================================================
-      # 31. SAVE PARTIAL OR COMPLETE BUILD
-      #
-      # Runs after failures too.
+      # 31. SAVE PARTIAL/COMPLETE BUILD
       # ============================================================
 
       - name: Show incremental build size
@@ -1837,7 +1824,6 @@ jobs:
               || true
 
             exit 1
-
           fi
 
           echo "APP=$APP" \
@@ -1908,7 +1894,6 @@ jobs:
               || true
 
             exit 1
-
           fi
 
           echo "EXEC_NAME=$EXEC_NAME" \
@@ -1931,7 +1916,7 @@ jobs:
             || true
 
       # ============================================================
-      # 34. CHECK FOR LFS POINTERS INSIDE FINAL APP
+      # 34. VERIFY FINAL APP RESOURCES
       # ============================================================
 
       - name: Verify packaged app resources
@@ -2029,7 +2014,7 @@ jobs:
             | head -180
 
       # ============================================================
-      # 36. BUILD INFORMATION
+      # 36. BUILD INFO
       # ============================================================
 
       - name: Write build information
@@ -2088,7 +2073,7 @@ jobs:
             echo "Compatibility fixes:"
             echo "BundleKey fmt::join"
             echo "StringRef / BundleKey path fmt::join"
-            echo "Legacy fmt::println compatibility in mesh_bevel.cc"
+            echo "Legacy fmt println compatibility in mesh_bevel.cc"
             echo
 
             echo "UIKit compatibility patches:"
@@ -2139,7 +2124,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # 38. ALWAYS UPLOAD DIAGNOSTICS
+      # 38. UPLOAD DIAGNOSTICS
       # ============================================================
 
       - name: Upload build logs
