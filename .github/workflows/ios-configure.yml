@@ -1,30 +1,36 @@
-name: Build Blender iOS - Xcode 26.3
+name: Build Blender iOS - Xcode 26 Fast
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: blender-ios-xcode26-${{ github.ref }}
+  group: blender-ios-xcode26-fast-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Blender iOS - Xcode 26.3
+    name: Blender iOS - Fast Incremental
     runs-on: macos-15
     timeout-minutes: 180
 
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
+      BLENDER_SHA: 1e391616fea93b759ac5ad73cdbbbcb7f2fa08e6
+
+      # Keep this unchanged while iterating on small source/build fixes.
+      BUILD_CACHE_VERSION: fast-v1
+
+      EXPECTED_IOS_LIB_SHA: 393201c7c8525941553f6a96e19b909d6b3bfc4f
+      EXPECTED_MAC_LIB_SHA: a3e20428fb0ab2231903608cdca90301e130dbfc
+
     steps:
+
       # ============================================================
-      # 1. CHECKOUT THE EXACT BLENDER SOURCE WE HAVE BEEN TESTING
-      #
-      # Important:
-      # use the full 40-character commit, not the short SHA.
+      # 1. CHECKOUT EXACT SOURCE
       # ============================================================
 
-      - name: Checkout pinned Salmazov Blender iOS
+      - name: Checkout Blender iOS
         uses: actions/checkout@v6
         with:
           repository: salmazov/blender-ios
@@ -42,27 +48,85 @@ jobs:
         run: |
           set -euxo pipefail
 
-          EXPECTED="1e391616fea93b759ac5ad73cdbbbcb7f2fa08e6"
           ACTUAL="$(git rev-parse HEAD)"
 
           echo "========================================"
-          echo "BLENDER SOURCE"
+          echo "SOURCE"
           echo "========================================"
-          echo
-          echo "Expected: $EXPECTED"
+
+          echo "Expected: $BLENDER_SHA"
           echo "Actual:   $ACTUAL"
 
-          test "$ACTUAL" = "$EXPECTED"
+          test "$ACTUAL" = "$BLENDER_SHA"
 
-          echo
           git log -1 --oneline
 
-          echo "BLENDER_SOURCE_SHA=$ACTUAL" >> "$GITHUB_ENV"
+      # ============================================================
+      # 3. NORMALIZE SOURCE TIMESTAMPS
+      #
+      # This improves our chances of reusing object files restored
+      # from the previous Xcode build cache.
+      # ============================================================
+
+      - name: Normalize source timestamps
+        run: |
+          set -euxo pipefail
+
+          python3 <<'PY'
+          import os
+          import subprocess
+
+          stamp = int(
+              subprocess.check_output(
+                  [
+                      "git",
+                      "show",
+                      "-s",
+                      "--format=%ct",
+                      "HEAD",
+                  ],
+                  text=True,
+              ).strip()
+          )
+
+          tracked = subprocess.check_output(
+              [
+                  "git",
+                  "ls-files",
+                  "-z",
+              ]
+          )
+
+          count = 0
+
+          for raw_path in tracked.split(b"\0"):
+              if not raw_path:
+                  continue
+
+              path = os.fsdecode(raw_path)
+
+              if not os.path.lexists(path):
+                  continue
+
+              try:
+                  os.utime(
+                      path,
+                      (stamp, stamp),
+                      follow_symlinks=False,
+                  )
+                  count += 1
+              except (OSError, NotImplementedError):
+                  pass
+
+          print(
+              "Normalized",
+              count,
+              "tracked paths"
+          )
+          PY
 
       # ============================================================
-      # 3. SELECT XCODE 26.3
-      #
-      # macos-15 defaults to Xcode 16.4, so explicitly select 26.3.
+      # 4. SELECT XCODE 26.3
       # ============================================================
 
       - name: Select Xcode 26.3
@@ -72,15 +136,15 @@ jobs:
           XCODE="/Applications/Xcode_26.3.app"
 
           if [ ! -d "$XCODE" ]; then
-            echo "ERROR: Xcode 26.3 is not installed."
+            echo "ERROR: Xcode 26.3 not installed."
             echo
-            echo "Installed Xcode versions:"
+            echo "Installed Xcodes:"
             ls -d /Applications/Xcode*.app || true
             exit 1
           fi
 
-          sudo xcode-select -s \
-            "$XCODE/Contents/Developer"
+          sudo xcode-select \
+            -s "$XCODE/Contents/Developer"
 
           echo "DEVELOPER_DIR=$XCODE/Contents/Developer" \
             >> "$GITHUB_ENV"
@@ -93,15 +157,11 @@ jobs:
           xcodebuild -version
 
           echo
-          echo "xcode-select:"
+          echo "Developer directory:"
           xcode-select -p
 
-          echo
-          echo "DEVELOPER_DIR:"
-          echo "$DEVELOPER_DIR"
-
       # ============================================================
-      # 4. VERIFY IOS 26 SDK
+      # 5. VERIFY IOS 26 SDK
       # ============================================================
 
       - name: Verify iOS SDK
@@ -124,22 +184,14 @@ jobs:
           echo "IPHONEOS SDK"
           echo "========================================"
 
-          echo
-          echo "Version:"
-          echo "$SDK_VERSION"
-
-          echo
-          echo "Path:"
-          echo "$SDK_PATH"
+          echo "Version: $SDK_VERSION"
+          echo "Path:    $SDK_PATH"
 
           case "$SDK_VERSION" in
             26.*)
-              echo
-              echo "Using iOS 26 SDK."
               ;;
             *)
-              echo
-              echo "ERROR: Expected iOS 26.x SDK."
+              echo "ERROR: Expected iOS 26.x SDK"
               exit 1
               ;;
           esac
@@ -151,16 +203,13 @@ jobs:
             >> "$GITHUB_ENV"
 
       # ============================================================
-      # 5. PROVE THE NEW UIKIT API EXISTS
+      # 6. QUICK MODERN UIKIT API TEST
       #
-      # This tests the exact API that failed under Xcode 16.4:
-      #
-      #   scene.effectiveGeometry.coordinateSpace.bounds
-      #
-      # Do this BEFORE spending time compiling Blender.
+      # Fail immediately if the selected SDK cannot compile the API
+      # used by Salmazov's iOS source.
       # ============================================================
 
-      - name: Test modern UIWindowScene API
+      - name: Test UIWindowScene API
         run: |
           set -euxo pipefail
 
@@ -172,15 +221,6 @@ jobs:
             return scene.effectiveGeometry.coordinateSpace.bounds;
           }
           EOF
-
-          echo "========================================"
-          echo "UIKIT API PROBE"
-          echo "========================================"
-
-          cat /tmp/uikit_probe.mm
-
-          echo
-          echo "Compiling..."
 
           SDKROOT="$(
             xcrun \
@@ -194,93 +234,89 @@ jobs:
             -x objective-c++ \
             -fsyntax-only \
             -isysroot "$SDKROOT" \
-            -miphoneos-version-min=15.0 \
             /tmp/uikit_probe.mm
 
           echo
-          echo "Modern UIWindowScene API compiled successfully."
+          echo "Modern UIWindowScene API probe passed."
 
       # ============================================================
-      # 6. ENVIRONMENT INFORMATION
+      # 7. CHECK AVAILABLE DISK
       # ============================================================
 
-      - name: Show environment
-        run: |
-          set -eux
-
-          echo "===== macOS ====="
-          sw_vers
-
-          echo
-          echo "===== Architecture ====="
-          uname -m
-
-          echo
-          echo "===== Xcode ====="
-          xcodebuild -version
-
-          echo
-          echo "===== iPhoneOS ====="
-          xcrun --sdk iphoneos --show-sdk-version
-          xcrun --sdk iphoneos --show-sdk-path
-
-          echo
-          echo "===== Git ====="
-          git --version
-
-          echo
-          echo "===== Disk ====="
-          df -h
-
-      # ============================================================
-      # 7. FREE DISK SPACE
-      # ============================================================
-
-      - name: Free disk space
-        run: |
-          set -eux
-
-          sudo rm -rf \
-            /usr/local/lib/android \
-            || true
-
-          sudo rm -rf \
-            /usr/share/dotnet \
-            || true
-
-          sudo rm -rf \
-            ~/Library/Android \
-            || true
-
-          sudo rm -rf \
-            /opt/ghc \
-            || true
-
-          sudo rm -rf \
-            /usr/local/.ghcup \
-            || true
-
-          sudo rm -rf \
-            /Library/Developer/CoreSimulator/Profiles \
-            || true
-
-          sudo xcrun simctl delete all \
-            2>/dev/null \
-            || true
-
-          df -h
-
-      # ============================================================
-      # 8. INSTALL BUILD TOOLS
-      # ============================================================
-
-      - name: Install build tools
+      - name: Check disk space
         run: |
           set -euxo pipefail
 
-          brew install \
-            cmake \
-            git-lfs
+          df -h "$GITHUB_WORKSPACE"
+
+          FREE_KB="$(
+            df -Pk "$GITHUB_WORKSPACE" \
+              | awk 'NR == 2 {print $4}'
+          )"
+
+          echo "Available KB: $FREE_KB"
+
+          if [ "$FREE_KB" -lt 30000000 ]; then
+
+            echo
+            echo "Low disk space; cleaning runner..."
+
+            sudo rm -rf \
+              /usr/local/lib/android \
+              || true
+
+            sudo rm -rf \
+              /usr/share/dotnet \
+              || true
+
+            sudo rm -rf \
+              "$HOME/Library/Android" \
+              || true
+
+            sudo rm -rf \
+              /opt/ghc \
+              || true
+
+            sudo rm -rf \
+              /usr/local/.ghcup \
+              || true
+
+            sudo xcrun simctl delete all \
+              2>/dev/null \
+              || true
+
+          else
+
+            echo
+            echo "Enough free space; skipping large cleanup."
+
+          fi
+
+          df -h "$GITHUB_WORKSPACE"
+
+      # ============================================================
+      # 8. ENSURE REQUIRED TOOLS
+      # ============================================================
+
+      - name: Ensure build tools
+        run: |
+          set -euxo pipefail
+
+          NEED=""
+
+          if ! command -v cmake >/dev/null 2>&1; then
+            NEED="$NEED cmake"
+          fi
+
+          if ! command -v git-lfs >/dev/null 2>&1; then
+            NEED="$NEED git-lfs"
+          fi
+
+          if [ -n "$NEED" ]; then
+            brew install $NEED
+          else
+            echo "CMake and Git LFS already available."
+          fi
 
           git lfs install
 
@@ -292,21 +328,11 @@ jobs:
           echo "===== Git LFS ====="
           git lfs version
 
-          echo
-          echo "===== Python ====="
-          python3 --version
-
-          echo
-          echo "===== Xcode still selected ====="
-          xcodebuild -version
-
       # ============================================================
-      # 9. FETCH startup.blend
-      #
-      # Fetch the LFS object from official Blender upstream.
+      # 9. CONFIGURE OFFICIAL BLENDER LFS REMOTE
       # ============================================================
 
-      - name: Fetch startup.blend
+      - name: Configure Blender LFS remote
         run: |
           set -euxo pipefail
 
@@ -324,37 +350,354 @@ jobs:
             lfs.remote.searchall \
             true
 
-          git lfs fetch \
-            blender-lfs \
-            --include="release/datafiles/startup.blend" \
-            2>&1 | tee source-lfs.log
+          echo "===== Remotes ====="
+          git remote -v
 
-          git lfs checkout \
-            release/datafiles/startup.blend
+      # ============================================================
+      # 10. RESTORE SOURCE LFS ASSET CACHE
+      #
+      # Cache files that previously caused the app-icon failure,
+      # plus Blender release/datafiles.
+      # ============================================================
 
-          test -f \
-            release/datafiles/startup.blend
+      - name: Restore source LFS assets
+        id: source-lfs-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            release/datafiles
+            release/ios/Blender.app/Assets.xcassets
+          key: blender-source-lfs-${{ env.BLENDER_SHA }}-v2
 
-          SIZE="$(
-            stat \
-              -f '%z' \
-              release/datafiles/startup.blend
-          )"
+      # ============================================================
+      # 11. MATERIALIZE ALL REQUIRED SOURCE LFS ASSETS
+      #
+      # This is the important new fix.
+      #
+      # We first use the Salmazov origin for the iOS-specific files.
+      # Blender datafiles are fetched from Blender's official server.
+      #
+      # If anything remains an LFS pointer we try both sources before
+      # allowing the expensive compile to start.
+      # ============================================================
+
+      - name: Fetch required source LFS assets
+        run: |
+          set -euxo pipefail
+
+          IOS_DIR="release/ios/Blender.app/Assets.xcassets"
+          DATA_DIR="release/datafiles"
+
+          echo "========================================"
+          echo "LFS FILES IN IOS ASSET CATALOG"
+          echo "========================================"
+
+          git lfs ls-files \
+            "$IOS_DIR" \
+            || true
 
           echo
-          echo "startup.blend size:"
-          echo "$SIZE bytes"
+          echo "========================================"
+          echo "LFS FILES IN DATAFILES"
+          echo "========================================"
+
+          git lfs ls-files \
+            "$DATA_DIR" \
+            || true
+
+          # --------------------------------------------------------
+          # iOS-specific assets.
+          #
+          # Start with the Salmazov repository since these may be
+          # specific to the iOS fork.
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "FETCH IOS ASSETS FROM SALMAZOV ORIGIN"
+          echo "========================================"
+
+          git lfs pull \
+            origin \
+            --include="release/ios/Blender.app/Assets.xcassets/**" \
+            || true
+
+          # --------------------------------------------------------
+          # Blender runtime/release data.
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "FETCH DATAFILES FROM OFFICIAL BLENDER"
+          echo "========================================"
+
+          git lfs pull \
+            blender-lfs \
+            --include="release/datafiles/**" \
+            || true
+
+          # --------------------------------------------------------
+          # Scan for remaining pointers.
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "FIRST LFS POINTER SCAN"
+          echo "========================================"
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          roots = [
+              Path(
+                  "release/ios/Blender.app/"
+                  "Assets.xcassets"
+              ),
+              Path(
+                  "release/datafiles"
+              ),
+          ]
+
+          magic = (
+              b"version "
+              b"https://git-lfs.github.com/spec/v1"
+          )
+
+          for root in roots:
+              if not root.exists():
+                  print(
+                      "MISSING DIRECTORY:",
+                      root,
+                  )
+                  continue
+
+              for path in root.rglob("*"):
+                  if not path.is_file():
+                      continue
+
+                  try:
+                      head = path.read_bytes()[:200]
+                  except OSError:
+                      continue
+
+                  if head.startswith(magic):
+                      print(
+                          "LFS POINTER:",
+                          path,
+                      )
+          PY
+
+          # --------------------------------------------------------
+          # Fallback:
+          # Try Blender official server for any iOS assets that the
+          # GitHub fork did not materialize.
+          # --------------------------------------------------------
+
+          if python3 <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(
+              "release/ios/Blender.app/"
+              "Assets.xcassets"
+          )
+
+          magic = (
+              b"version "
+              b"https://git-lfs.github.com/spec/v1"
+          )
+
+          bad = []
+
+          if root.exists():
+              for path in root.rglob("*"):
+                  if not path.is_file():
+                      continue
+
+                  try:
+                      if path.read_bytes()[:200].startswith(magic):
+                          bad.append(path)
+                  except OSError:
+                      pass
+
+          for path in bad:
+              print(
+                  "STILL POINTER:",
+                  path,
+              )
+
+          sys.exit(
+              0 if not bad else 1
+          )
+          PY
+          then
+
+            echo
+            echo "iOS asset catalog already materialized."
+
+          else
+
+            echo
+            echo "Some iOS assets remain pointers."
+            echo "Trying official Blender LFS server..."
+
+            git lfs pull \
+              blender-lfs \
+              --include="release/ios/Blender.app/Assets.xcassets/**" \
+              || true
+
+          fi
+
+          # --------------------------------------------------------
+          # Also try origin as fallback for any datafiles which might
+          # exist only on the branch/fork.
+          # --------------------------------------------------------
+
+          git lfs pull \
+            origin \
+            --include="release/datafiles/**" \
+            || true
+
+          # --------------------------------------------------------
+          # FINAL HARD CHECK.
+          #
+          # Do NOT launch a long Blender build if even one resource
+          # is still merely an LFS pointer.
+          # --------------------------------------------------------
+
+          echo
+          echo "========================================"
+          echo "FINAL LFS POINTER CHECK"
+          echo "========================================"
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          roots = [
+              Path(
+                  "release/ios/Blender.app/"
+                  "Assets.xcassets"
+              ),
+              Path(
+                  "release/datafiles"
+              ),
+          ]
+
+          magic = (
+              b"version "
+              b"https://git-lfs.github.com/spec/v1"
+          )
+
+          bad = []
+
+          for root in roots:
+              if not root.exists():
+                  raise SystemExit(
+                      f"ERROR: required directory "
+                      f"does not exist: {root}"
+                  )
+
+              for path in root.rglob("*"):
+                  if not path.is_file():
+                      continue
+
+                  try:
+                      head = path.read_bytes()[:200]
+                  except OSError:
+                      continue
+
+                  if head.startswith(magic):
+                      bad.append(path)
+
+          if bad:
+              print()
+              print(
+                  "ERROR: These required files "
+                  "are still Git LFS pointers:"
+              )
+
+              for path in bad:
+                  print(
+                      " ",
+                      path,
+                  )
+
+              raise SystemExit(1)
+
+          print()
+          print(
+              "No Git LFS pointers remain "
+              "in required release resources."
+          )
+          PY
+
+          echo
+          echo "========================================"
+          echo "APPICON CONTENTS"
+          echo "========================================"
+
+          find \
+            "$IOS_DIR" \
+            -maxdepth 4 \
+            -type f \
+            -print \
+            | sort
+
+          echo
+          echo "========================================"
+          echo "FILE TYPES"
+          echo "========================================"
+
+          find \
+            "$IOS_DIR" \
+            -type f \
+            -exec file {} \; \
+            | head -150
+
+      # ============================================================
+      # 12. VERIFY startup.blend SPECIFICALLY
+      # ============================================================
+
+      - name: Verify startup.blend
+        run: |
+          set -euxo pipefail
+
+          STARTUP="release/datafiles/startup.blend"
+
+          test -f "$STARTUP"
+
+          SIZE="$(
+            stat -f '%z' "$STARTUP"
+          )"
+
+          echo "startup.blend size: $SIZE"
 
           if [ "$SIZE" -lt 1024 ]; then
-            echo "ERROR: startup.blend is still an LFS pointer."
+            echo "ERROR: startup.blend is not materialized."
             exit 1
           fi
 
-          file \
-            release/datafiles/startup.blend
+          file "$STARTUP"
 
       # ============================================================
-      # 10. GET EXACT PREBUILT LIBRARY REVISIONS
+      # 13. SAVE SOURCE LFS CACHE IMMEDIATELY
+      #
+      # Save now, before Blender compilation, so a later compiler or
+      # linker failure cannot make us download these again.
+      # ============================================================
+
+      - name: Save source LFS assets
+        if: steps.source-lfs-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            release/datafiles
+            release/ios/Blender.app/Assets.xcassets
+          key: blender-source-lfs-${{ env.BLENDER_SHA }}-v2
+
+      # ============================================================
+      # 14. DETERMINE PREBUILT LIBRARY REVISIONS
       # ============================================================
 
       - name: Determine library revisions
@@ -399,11 +742,6 @@ jobs:
             >> "$GITHUB_OUTPUT"
 
           echo
-          echo "========================================"
-          echo "PREBUILT LIBRARIES"
-          echo "========================================"
-
-          echo
           echo "iOS:"
           echo "$IOS_URL"
           echo "$IOS_SHA"
@@ -414,63 +752,48 @@ jobs:
           echo "$MAC_SHA"
 
       # ============================================================
-      # 11. VERIFY KNOWN PINS
+      # 15. VERIFY EXACT LIBRARY PINS
       # ============================================================
 
-      - name: Verify expected library revisions
+      - name: Verify library revisions
         run: |
           set -euxo pipefail
 
-          EXPECTED_IOS="393201c7c8525941553f6a96e19b909d6b3bfc4f"
-          EXPECTED_MAC="a3e20428fb0ab2231903608cdca90301e130dbfc"
+          IOS="${{ steps.libs.outputs.ios_sha }}"
+          MAC="${{ steps.libs.outputs.mac_sha }}"
 
-          ACTUAL_IOS="${{ steps.libs.outputs.ios_sha }}"
-          ACTUAL_MAC="${{ steps.libs.outputs.mac_sha }}"
-
-          echo "iOS expected:"
-          echo "$EXPECTED_IOS"
-
-          echo "iOS actual:"
-          echo "$ACTUAL_IOS"
+          echo "iOS expected: $EXPECTED_IOS_LIB_SHA"
+          echo "iOS actual:   $IOS"
 
           echo
-          echo "macOS expected:"
-          echo "$EXPECTED_MAC"
+          echo "macOS expected: $EXPECTED_MAC_LIB_SHA"
+          echo "macOS actual:   $MAC"
 
-          echo "macOS actual:"
-          echo "$ACTUAL_MAC"
+          test \
+            "$IOS" \
+            = "$EXPECTED_IOS_LIB_SHA"
 
-          test "$ACTUAL_IOS" = "$EXPECTED_IOS"
-          test "$ACTUAL_MAC" = "$EXPECTED_MAC"
+          test \
+            "$MAC" \
+            = "$EXPECTED_MAC_LIB_SHA"
 
       # ============================================================
-      # 12. CACHE IOS PREBUILT LIBRARIES
+      # 16. RESTORE IOS PREBUILT LIBRARIES
       # ============================================================
 
-      - name: Cache iOS libraries
-        id: ios-cache
-        uses: actions/cache@v5
+      - name: Restore iOS libraries
+        id: ios-lib-cache
+        uses: actions/cache/restore@v5
         with:
           path: lib/ios_arm64
-          key: blender-ios-arm64-${{ steps.libs.outputs.ios_sha }}-v4
+          key: blender-ioslib-${{ steps.libs.outputs.ios_sha }}-v2
 
       # ============================================================
-      # 13. CACHE MACOS HOST LIBRARIES
-      # ============================================================
-
-      - name: Cache macOS libraries
-        id: mac-cache
-        uses: actions/cache@v5
-        with:
-          path: lib/macos_arm64
-          key: blender-macos-arm64-${{ steps.libs.outputs.mac_sha }}-v4
-
-      # ============================================================
-      # 14. FETCH IOS LIBRARIES ON CACHE MISS
+      # 17. FETCH IOS LIBRARIES ON CACHE MISS
       # ============================================================
 
       - name: Fetch iOS libraries
-        if: steps.ios-cache.outputs.cache-hit != 'true'
+        if: steps.ios-lib-cache.outputs.cache-hit != 'true'
         env:
           GIT_LFS_SKIP_SMUDGE: "1"
         run: |
@@ -496,20 +819,14 @@ jobs:
             --detach \
             FETCH_HEAD
 
-          EXPECTED="${{ steps.libs.outputs.ios_sha }}"
-
           ACTUAL="$(
             git -C lib/ios_arm64 \
               rev-parse HEAD
           )"
 
-          echo "Expected:"
-          echo "$EXPECTED"
-
-          echo "Actual:"
-          echo "$ACTUAL"
-
-          test "$ACTUAL" = "$EXPECTED"
+          test \
+            "$ACTUAL" \
+            = "${{ steps.libs.outputs.ios_sha }}"
 
           git -C lib/ios_arm64 \
             lfs install \
@@ -523,11 +840,34 @@ jobs:
             lib/ios_arm64
 
       # ============================================================
-      # 15. FETCH MACOS LIBRARIES ON CACHE MISS
+      # 18. SAVE IOS LIB CACHE IMMEDIATELY
+      # ============================================================
+
+      - name: Save iOS libraries
+        if: steps.ios-lib-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: lib/ios_arm64
+          key: blender-ioslib-${{ steps.libs.outputs.ios_sha }}-v2
+
+      # ============================================================
+      # 19. RESTORE MACOS HOST LIBRARIES
+      # ============================================================
+
+      - name: Restore macOS libraries
+        id: mac-lib-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: lib/macos_arm64
+          key: blender-maclib-${{ steps.libs.outputs.mac_sha }}-v2
+
+      # ============================================================
+      # 20. FETCH MACOS HOST LIBRARIES
       # ============================================================
 
       - name: Fetch macOS libraries
-        if: steps.mac-cache.outputs.cache-hit != 'true'
+        if: steps.mac-lib-cache.outputs.cache-hit != 'true'
         env:
           GIT_LFS_SKIP_SMUDGE: "1"
         run: |
@@ -553,20 +893,14 @@ jobs:
             --detach \
             FETCH_HEAD
 
-          EXPECTED="${{ steps.libs.outputs.mac_sha }}"
-
           ACTUAL="$(
             git -C lib/macos_arm64 \
               rev-parse HEAD
           )"
 
-          echo "Expected:"
-          echo "$EXPECTED"
-
-          echo "Actual:"
-          echo "$ACTUAL"
-
-          test "$ACTUAL" = "$EXPECTED"
+          test \
+            "$ACTUAL" \
+            = "${{ steps.libs.outputs.mac_sha }}"
 
           git -C lib/macos_arm64 \
             lfs install \
@@ -580,10 +914,22 @@ jobs:
             lib/macos_arm64
 
       # ============================================================
-      # 16. VERIFY PREBUILT LIBRARIES
+      # 21. SAVE MACOS LIB CACHE IMMEDIATELY
       # ============================================================
 
-      - name: Verify prebuilt libraries
+      - name: Save macOS libraries
+        if: steps.mac-lib-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: lib/macos_arm64
+          key: blender-maclib-${{ steps.libs.outputs.mac_sha }}-v2
+
+      # ============================================================
+      # 22. VERIFY PREBUILT LIBRARIES
+      # ============================================================
+
+      - name: Verify libraries
         run: |
           set -euxo pipefail
 
@@ -597,11 +943,13 @@ jobs:
               rev-parse HEAD
           )"
 
-          test "$IOS_ACTUAL" = \
-            "${{ steps.libs.outputs.ios_sha }}"
+          test \
+            "$IOS_ACTUAL" \
+            = "$EXPECTED_IOS_LIB_SHA"
 
-          test "$MAC_ACTUAL" = \
-            "${{ steps.libs.outputs.mac_sha }}"
+          test \
+            "$MAC_ACTUAL" \
+            = "$EXPECTED_MAC_LIB_SHA"
 
           echo "===== iOS Python ====="
 
@@ -612,7 +960,7 @@ jobs:
             lib/ios_arm64/python/lib/libpython3.11.a
 
           echo
-          echo "===== macOS host Python ====="
+          echo "===== Host Python ====="
 
           HOST_PYTHON="$(
             find \
@@ -625,38 +973,20 @@ jobs:
           )"
 
           if [ -z "$HOST_PYTHON" ]; then
-            echo "ERROR: macOS host Python missing."
+            echo "ERROR: host Python missing."
             exit 1
           fi
 
           echo "$HOST_PYTHON"
 
-          echo
-          echo "===== Sizes ====="
-
-          du -sh \
-            lib/ios_arm64
-
-          du -sh \
-            lib/macos_arm64
-
       # ============================================================
-      # 17. APPLY ONLY THE TWO KNOWN FMT COMPATIBILITY FIXES
+      # 23. APPLY KNOWN FMT COMPATIBILITY FIXES
       #
-      # IMPORTANT:
-      #
-      # We are NOT modifying:
-      #
-      #   GHOST_WindowIOS.mm
-      #   GHOST_SystemIOS.mm
-      #
-      # We want Xcode 26.3 to compile Salmazov's modern UIKit code
-      # exactly as written.
-      #
-      # We also do NOT replace fmt itself.
+      # NO UIKit patch under Xcode 26.
+      # NO replacement fmt headers.
       # ============================================================
 
-      - name: Patch old fmt compatibility
+      - name: Apply fmt compatibility fixes
         run: |
           set -euxo pipefail
 
@@ -665,11 +995,7 @@ jobs:
 
 
           # ========================================================
-          # PATCH A
-          #
-          # node_geo_join_bundle.cc
-          #
-          # fmt::join(overridden_keys, ", ")
+          # A. node_geo_join_bundle.cc
           # ========================================================
 
           file1 = Path(
@@ -703,14 +1029,14 @@ jobs:
           count = text.count(needle)
 
           print(
-              "overridden_keys fmt::join occurrences:",
+              "overridden_keys joins:",
               count,
           )
 
           if count != 1:
               raise SystemExit(
-                  "ERROR: expected exactly one "
-                  "overridden_keys fmt::join; "
+                  "ERROR: expected exactly 1 "
+                  "overridden_keys join; "
                   f"found {count}"
               )
 
@@ -722,23 +1048,9 @@ jobs:
 
           file1.write_text(text)
 
-          print(
-              "Patched:",
-              file1,
-          )
-
 
           # ========================================================
-          # PATCH B
-          #
-          # geometry_nodes_bundle.cc
-          #
-          # There are exactly two:
-          #
-          #   fmt::join(path, "/")
-          #
-          # One path uses StringRef.
-          # Another uses BundleKey.
+          # B. geometry_nodes_bundle.cc
           # ========================================================
 
           file2 = Path(
@@ -792,14 +1104,14 @@ jobs:
           count = text.count(needle)
 
           print(
-              "path fmt::join occurrences:",
+              "path joins:",
               count,
           )
 
           if count != 2:
               raise SystemExit(
-                  "ERROR: expected exactly two "
-                  "path fmt::join expressions; "
+                  "ERROR: expected exactly 2 "
+                  "path joins; "
                   f"found {count}"
               )
 
@@ -810,60 +1122,53 @@ jobs:
 
           file2.write_text(text)
 
-          print(
-              "Patched:",
-              file2,
-          )
-
 
           # ========================================================
-          # VERIFY FMT PATCHES
+          # VERIFY
           # ========================================================
 
-          if 'fmt::join(overridden_keys, ", ")' in file1.read_text():
+          if (
+              'fmt::join(overridden_keys, ", ")'
+              in file1.read_text()
+          ):
               raise SystemExit(
-                  "ERROR: overridden_keys fmt::join remains"
+                  "ERROR: overridden_keys join remains"
               )
 
-          if 'fmt::join(path, "/")' in file2.read_text():
+          if (
+              'fmt::join(path, "/")'
+              in file2.read_text()
+          ):
               raise SystemExit(
-                  "ERROR: path fmt::join remains"
+                  "ERROR: path join remains"
               )
 
           print()
           print(
-              "fmt compatibility patches verified."
+              "fmt compatibility patches applied."
           )
           PY
 
           echo
           echo "========================================"
-          echo "FMT PATCH DIFF"
+          echo "COMPATIBILITY PATCH"
           echo "========================================"
-
-          git diff -- \
-            source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
-            source/blender/nodes/intern/geometry_nodes_bundle.cc
 
           git diff -- \
             source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
             source/blender/nodes/intern/geometry_nodes_bundle.cc \
             > compatibility.patch
 
+          cat \
+            compatibility.patch
+
       # ============================================================
-      # 18. VERIFY MODERN IOS SOURCE IS UNTOUCHED
-      #
-      # The previous builds found this API in both GHOST_WindowIOS
-      # and GHOST_SystemIOS. Under Xcode 26.3 we want it intact.
+      # 24. VERIFY MODERN UIKIT SOURCE IS UNMODIFIED
       # ============================================================
 
       - name: Verify modern UIKit source
         run: |
           set -euxo pipefail
-
-          echo "========================================"
-          echo "MODERN UIKIT CALLS"
-          echo "========================================"
 
           grep -RIn \
             '\.effectiveGeometry\.coordinateSpace' \
@@ -871,43 +1176,82 @@ jobs:
             --include='GHOST_*IOS.mm' \
             | tee modern-uikit-calls.txt
 
-          COUNT="$(
-            grep -RIl \
-              '\.effectiveGeometry\.coordinateSpace' \
-              intern/ghost/intern \
-              --include='GHOST_*IOS.mm' \
-              | wc -l \
-              | tr -d ' '
-          )"
+          test -s \
+            modern-uikit-calls.txt
 
           echo
-          echo "Files using modern API: $COUNT"
+          echo "Modern UIKit source retained."
 
-          if [ "$COUNT" -lt 1 ]; then
-            echo
-            echo "ERROR: modern effectiveGeometry API unexpectedly missing."
-            exit 1
+      # ============================================================
+      # 25. RESTORE PARTIAL XCODE BUILD
+      #
+      # Every run gets a unique save key, but restore-keys selects
+      # the newest compatible previous partial build.
+      # ============================================================
+
+      - name: Restore incremental Xcode build
+        id: build-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ${{ github.workspace }}/build_ios
+            ${{ github.workspace }}/../build_ios/build_darwin_tools
+          key: >-
+            blender-build-${{ env.BUILD_CACHE_VERSION }}-xcode26.3-${{ env.BLENDER_SHA }}-cyclesoff-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            blender-build-${{ env.BUILD_CACHE_VERSION }}-xcode26.3-${{ env.BLENDER_SHA }}-cyclesoff-
+
+      # ============================================================
+      # 26. SHOW RESTORED CACHE
+      # ============================================================
+
+      - name: Inspect incremental build cache
+        run: |
+          set -euxo pipefail
+
+          echo "Cache matched key:"
+          echo "${{ steps.build-cache.outputs.cache-matched-key }}"
+
+          echo
+
+          if [ -d build_ios ]; then
+
+            echo "Restored build_ios:"
+            du -sh \
+              build_ios \
+              || true
+
+          else
+
+            echo "No previous build_ios cache restored."
+
           fi
 
           echo
-          echo "No Xcode-16 UIKit fallback patch is being applied."
+
+          if [ -d "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" ]; then
+
+            echo "Restored host tools:"
+            du -sh \
+              "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" \
+              || true
+
+          fi
 
       # ============================================================
-      # 19. CONFIGURE BLENDER FOR IOS
+      # 27. CONFIGURE
       #
-      # Python stays ON.
-      # Cycles stays OFF.
+      # IMPORTANT:
+      # There is intentionally NO:
       #
-      # No UIKit source workaround.
-      # No fmt header replacement.
+      #   rm -rf build_ios
+      #
+      # CMake updates the restored build tree in place.
       # ============================================================
 
       - name: Configure Blender
         run: |
           set -euxo pipefail
-
-          rm -rf \
-            build_ios
 
           IOS_LIBDIR="$GITHUB_WORKSPACE/lib/ios_arm64"
 
@@ -925,9 +1269,14 @@ jobs:
           echo "CONFIGURE"
           echo "========================================"
 
-          echo
           echo "Xcode:"
           xcodebuild -version
+
+          echo
+          echo "iPhoneOS:"
+          xcrun \
+            --sdk iphoneos \
+            --show-sdk-version
 
           echo
           echo "SDK:"
@@ -947,21 +1296,28 @@ jobs:
             -DAPPLE_TARGET_DEVICE=ios \
             -DWITH_PYTHON=ON \
             -DWITH_CYCLES=OFF \
+            -DWITH_GTESTS=OFF \
+            -DWITH_TESTS_BATCHED=OFF \
+            -DWITH_UI_TESTS=OFF \
+            -DWITH_GPU_BACKEND_TESTS=OFF \
+            -DWITH_GPU_COMPOSITOR_TESTS=OFF \
+            -DWITH_GPU_DRAW_TESTS=OFF \
+            -DWITH_GPU_RENDER_TESTS=OFF \
             -DCMAKE_FIND_ROOT_PATH="$IOS_DEV_ROOT;$(dirname "$IOS_DEV_ROOT");$IOS_LIBDIR" \
             2>&1 | tee configure.log
 
       # ============================================================
-      # 20. VERIFY CMAKE CONFIGURATION
+      # 28. VERIFY CONFIGURATION
       # ============================================================
 
       - name: Verify configuration
         run: |
           set -euxo pipefail
 
-          echo "===== Important options ====="
+          echo "===== Relevant CMake settings ====="
 
           grep -E \
-            'WITH_CYCLES:|WITH_PYTHON:|WITH_PYTHON_NUMPY:|WITH_AUDASPACE:|WITH_METAL_BACKEND:' \
+            'WITH_CYCLES:|WITH_PYTHON:|WITH_GTESTS:|WITH_TESTS_BATCHED:|WITH_METAL_BACKEND:' \
             build_ios/CMakeCache.txt \
             || true
 
@@ -986,21 +1342,80 @@ jobs:
           test "$CYCLES" = "OFF"
           test "$PYTHON" = "ON"
 
-          echo
-          echo "===== CMake Xcode info ====="
-
-          grep -E \
-            'CMAKE_OSX_SYSROOT|CMAKE_XCODE' \
-            build_ios/CMakeCache.txt \
-            || true
-
       # ============================================================
-      # 21. BUILD BLENDER
+      # 29. FINAL PRE-BUILD RESOURCE CHECK
       #
-      # Keep jobs at 3 to avoid unnecessary memory pressure.
+      # This is specifically to prevent another 20-30 minute compile
+      # followed by an AppIcon LFS failure.
       # ============================================================
 
-      - name: Build Blender for physical iOS
+      - name: Final resource sanity check
+        run: |
+          set -euxo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          roots = [
+              Path(
+                  "release/ios/Blender.app/"
+                  "Assets.xcassets"
+              ),
+              Path(
+                  "release/datafiles"
+              ),
+          ]
+
+          magic = (
+              b"version "
+              b"https://git-lfs.github.com/spec/v1"
+          )
+
+          pointers = []
+
+          for root in roots:
+              if not root.exists():
+                  raise SystemExit(
+                      f"Missing required path: {root}"
+                  )
+
+              for path in root.rglob("*"):
+                  if not path.is_file():
+                      continue
+
+                  try:
+                      if path.read_bytes()[:200].startswith(magic):
+                          pointers.append(path)
+                  except OSError:
+                      pass
+
+          if pointers:
+              print(
+                  "ERROR: LFS pointers remain:"
+              )
+
+              for path in pointers:
+                  print(
+                      " ",
+                      path,
+                  )
+
+              raise SystemExit(1)
+
+          print(
+              "Pre-build resource check passed."
+          )
+          PY
+
+      # ============================================================
+      # 30. BUILD
+      #
+      # Keep jobs=3: that has already been stable.
+      #
+      # Disable IDE indexing/debug-symbol generation in CI.
+      # ============================================================
+
+      - name: Build Blender
         run: |
           set -o pipefail
 
@@ -1009,11 +1424,14 @@ jobs:
           echo "========================================"
 
           echo
+          echo "Xcode:"
           xcodebuild -version
 
           echo
           echo "SDK:"
-          xcrun --sdk iphoneos --show-sdk-version
+          xcrun \
+            --sdk iphoneos \
+            --show-sdk-version
 
           set +e
 
@@ -1026,6 +1444,9 @@ jobs:
             -jobs 3 \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            GCC_GENERATE_DEBUGGING_SYMBOLS=NO \
+            CLANG_ENABLE_CODE_COVERAGE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -1044,11 +1465,11 @@ jobs:
             echo "========================================"
 
             echo
-            echo "===== Compiler / linker errors ====="
+            echo "===== Compiler / linker / asset errors ====="
 
             grep -n -C 30 \
               -E \
-              '(^|[[:space:]])error:|fatal error:|static assertion failed|Undefined symbols|duplicate symbol|ld: |clang: error:' \
+              '(^|[[:space:]])error:|fatal error:|static assertion failed|Undefined symbols|duplicate symbol|ld: |clang: error:|actool|CompileAssetCatalog|AppIcon|git-lfs.github.com/spec/v1' \
               xcodebuild.log \
               > compiler-errors.txt \
               || true
@@ -1058,7 +1479,7 @@ jobs:
               || true
 
             echo
-            echo "===== UIKit / GHOST diagnostics ====="
+            echo "===== iOS / UIKit ====="
 
             grep -n -C 20 \
               -E \
@@ -1072,7 +1493,7 @@ jobs:
               || true
 
             echo
-            echo "===== fmt / Bundle diagnostics ====="
+            echo "===== fmt ====="
 
             grep -n -C 15 \
               -E \
@@ -1086,7 +1507,21 @@ jobs:
               || true
 
             echo
-            echo "===== Linker diagnostics ====="
+            echo "===== Asset catalog ====="
+
+            grep -n -C 30 \
+              -E \
+              'actool|Assets.xcassets|AppIcon|CompileAssetCatalog|asset catalog|git-lfs.github.com/spec/v1' \
+              xcodebuild.log \
+              > asset-errors.txt \
+              || true
+
+            cat \
+              asset-errors.txt \
+              || true
+
+            echo
+            echo "===== Linker ====="
 
             grep -n -C 30 \
               -E \
@@ -1113,9 +1548,9 @@ jobs:
               || true
 
             echo
-            echo "===== Last 700 lines ====="
+            echo "===== Last 600 lines ====="
 
-            tail -700 \
+            tail -600 \
               xcodebuild.log \
               || true
 
@@ -1131,7 +1566,44 @@ jobs:
             xcodebuild.log
 
       # ============================================================
-      # 22. FIND Blender.app
+      # 31. SAVE PARTIAL OR COMPLETE BUILD
+      #
+      # Runs even after failure.
+      #
+      # This is what makes the next source-fix iteration much faster.
+      # ============================================================
+
+      - name: Show incremental build size
+        if: always()
+        run: |
+          echo "===== build_ios ====="
+
+          du -sh \
+            "$GITHUB_WORKSPACE/build_ios" \
+            2>/dev/null \
+            || true
+
+          echo
+          echo "===== host tools ====="
+
+          du -sh \
+            "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" \
+            2>/dev/null \
+            || true
+
+      - name: Save incremental Xcode build
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ${{ github.workspace }}/build_ios
+            ${{ github.workspace }}/../build_ios/build_darwin_tools
+          key: >-
+            blender-build-${{ env.BUILD_CACHE_VERSION }}-xcode26.3-${{ env.BLENDER_SHA }}-cyclesoff-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # ============================================================
+      # 32. FIND Blender.app
       # ============================================================
 
       - name: Find Blender.app
@@ -1151,14 +1623,12 @@ jobs:
               -quit
           )"
 
-          if [ -z "$APP" ] || \
-             [ ! -d "$APP" ]
-          then
+          if [ -z "$APP" ]; then
 
             echo "ERROR: Blender.app not found."
 
             echo
-            echo "===== All generated app bundles ====="
+            echo "Generated .app bundles:"
 
             find \
               build_ios \
@@ -1174,15 +1644,14 @@ jobs:
             >> "$GITHUB_ENV"
 
           echo
-          echo "===== Blender.app ====="
-
+          echo "Blender.app:"
           echo "$APP"
 
           du -sh \
             "$APP"
 
       # ============================================================
-      # 23. VERIFY APP EXECUTABLE
+      # 33. VERIFY APP
       # ============================================================
 
       - name: Verify Blender executable
@@ -1197,7 +1666,7 @@ jobs:
           plutil \
             -p \
             "$APP/Info.plist" \
-            | head -100
+            | head -120
 
           EXEC_NAME="$(
             /usr/libexec/PlistBuddy \
@@ -1229,14 +1698,14 @@ jobs:
 
           else
 
-            echo
-            echo "ERROR: executable not found."
+            echo "ERROR: Blender executable not found."
 
             find \
               "$APP" \
               -maxdepth 1 \
               -type f \
-              -print
+              -print \
+              || true
 
             exit 1
           fi
@@ -1250,8 +1719,6 @@ jobs:
           echo
           echo "===== Executable ====="
 
-          echo "$EXECUTABLE"
-
           file \
             "$EXECUTABLE"
 
@@ -1263,29 +1730,59 @@ jobs:
             || true
 
       # ============================================================
-      # 24. INSPECT APP
+      # 34. CHECK APP FOR LEFTOVER LFS POINTERS
       # ============================================================
 
-      - name: Inspect Blender.app
+      - name: Verify packaged app resources
         run: |
           set -euxo pipefail
 
-          echo "===== App size ====="
+          python3 <<'PY'
+          from pathlib import Path
+          import os
 
-          du -sh \
-            "$APP"
+          app = Path(
+              os.environ["APP"]
+          )
 
-          echo
-          echo "===== App contents ====="
+          magic = (
+              b"version "
+              b"https://git-lfs.github.com/spec/v1"
+          )
 
-          find \
-            "$APP" \
-            -maxdepth 2 \
-            -print \
-            | head -250
+          bad = []
+
+          for path in app.rglob("*"):
+              if not path.is_file():
+                  continue
+
+              try:
+                  if path.read_bytes()[:200].startswith(magic):
+                      bad.append(path)
+              except OSError:
+                  pass
+
+          if bad:
+              print(
+                  "ERROR: LFS pointer files made it "
+                  "into Blender.app:"
+              )
+
+              for path in bad:
+                  print(
+                      " ",
+                      path,
+                  )
+
+              raise SystemExit(1)
+
+          print(
+              "No LFS pointers found inside Blender.app."
+          )
+          PY
 
       # ============================================================
-      # 25. PACKAGE UNSIGNED IPA
+      # 35. PACKAGE UNSIGNED IPA
       # ============================================================
 
       - name: Package unsigned IPA
@@ -1302,18 +1799,18 @@ jobs:
             "$APP" \
             package/Payload/Blender.app
 
-          cd package
+          (
+            cd package
 
-          zip \
-            -qry \
-            -y \
-            ../Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa \
-            Payload
-
-          cd ..
+            zip \
+              -qry \
+              -y \
+              ../Blender-5.2-iPad-Xcode26-Fast.ipa \
+              Payload
+          )
 
           test -f \
-            Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa
+            Blender-5.2-iPad-Xcode26-Fast.ipa
 
           echo
           echo "========================================"
@@ -1321,17 +1818,17 @@ jobs:
           echo "========================================"
 
           ls -lh \
-            Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa
+            Blender-5.2-iPad-Xcode26-Fast.ipa
 
           echo
           echo "===== IPA contents ====="
 
           unzip -l \
-            Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa \
+            Blender-5.2-iPad-Xcode26-Fast.ipa \
             | head -150
 
       # ============================================================
-      # 26. WRITE BUILD INFORMATION
+      # 36. WRITE BUILD INFO
       # ============================================================
 
       - name: Write build information
@@ -1379,49 +1876,70 @@ jobs:
             echo "Build options:"
             echo "WITH_PYTHON=ON"
             echo "WITH_CYCLES=OFF"
+            echo "WITH_GTESTS=OFF"
+            echo "WITH_TESTS_BATCHED=OFF"
             echo
 
-            echo "Source compatibility fixes:"
+            echo "Compatibility fixes:"
             echo "BundleKey fmt::join"
-            echo "StringRef / BundleKey path fmt::join"
+            echo "StringRef / BundleKey path joins"
             echo
 
             echo "UIKit compatibility patches:"
             echo "NONE"
             echo
 
-            echo "UIKit source API:"
+            echo "UIKit API:"
             echo "effectiveGeometry.coordinateSpace"
+            echo
+
+            echo "LFS handling:"
+            echo "release/datafiles materialized"
+            echo "iOS Assets.xcassets materialized"
+            echo "pre-build pointer scan enabled"
+            echo "post-build pointer scan enabled"
+            echo
+
+            echo "Speed features:"
+            echo "source LFS cache"
+            echo "iOS dependency cache"
+            echo "macOS dependency cache"
+            echo "partial Xcode build cache"
+            echo "partial failed builds saved"
+            echo "source timestamp normalization"
+            echo "Xcode index store disabled"
+            echo "debug symbols disabled"
           } > build-revision.txt
 
           cat \
             build-revision.txt
 
       # ============================================================
-      # 27. UPLOAD IPA
+      # 37. UPLOAD IPA
       # ============================================================
 
       - name: Upload Blender IPA
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: Blender-5.2-iPad-Xcode26
+          name: Blender-5.2-iPad-Xcode26-Fast
           path: |
-            Blender-5.2-iPad-Xcode26-Cycles-OFF.ipa
+            Blender-5.2-iPad-Xcode26-Fast.ipa
             build-revision.txt
             compatibility.patch
+            modern-uikit-calls.txt
           if-no-files-found: error
           retention-days: 30
 
       # ============================================================
-      # 28. ALWAYS UPLOAD DIAGNOSTIC LOGS
+      # 38. ALWAYS UPLOAD DIAGNOSTIC LOGS
       # ============================================================
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: blender-ios-xcode26-build-logs
+          name: blender-ios-xcode26-fast-logs
           path: |
             build-revision.txt
             compatibility.patch
@@ -1430,10 +1948,10 @@ jobs:
             ios-lfs.log
             macos-lfs.log
             configure.log
-            xcodebuild.log
             compiler-errors.txt
             ios-errors.txt
             fmt-errors.txt
+            asset-errors.txt
             linker-errors.txt
             failed-commands.txt
             build_ios/CMakeCache.txt
