@@ -15,7 +15,7 @@ jobs:
 
     steps:
       # ============================================================
-      # CHECKOUT
+      # 1. CHECKOUT SALMAZOV IOS-NEW
       # ============================================================
 
       - name: Checkout
@@ -26,7 +26,7 @@ jobs:
           submodules: false
 
       # ============================================================
-      # ENVIRONMENT
+      # 2. ENVIRONMENT
       # ============================================================
 
       - name: Environment
@@ -35,24 +35,24 @@ jobs:
 
           sudo xcode-select -s /Applications/Xcode.app
 
-          echo "=== macOS ==="
+          echo "===== macOS ====="
           sw_vers
 
-          echo "=== Architecture ==="
+          echo "===== CPU ====="
           uname -m
 
-          echo "=== Xcode ==="
+          echo "===== Xcode ====="
           xcodebuild -version
 
-          echo "=== iPhoneOS SDK ==="
+          echo "===== iPhoneOS SDK ====="
           xcrun --sdk iphoneos --show-sdk-version
           xcrun --sdk iphoneos --show-sdk-path
 
-          echo "=== Disk ==="
+          echo "===== Disk ====="
           df -h
 
       # ============================================================
-      # FREE DISK SPACE
+      # 3. FREE DISK SPACE
       # ============================================================
 
       - name: Free disk space
@@ -69,20 +69,24 @@ jobs:
           df -h
 
       # ============================================================
-      # TOOLS
+      # 4. BUILD TOOLS
       # ============================================================
 
-      - name: Install tools
+      - name: Install build tools
         run: |
+          set -eux
+
           brew install cmake git-lfs
 
           git lfs install
 
           cmake --version
           git lfs version
+          python3 --version
+          curl --version | head -1
 
       # ============================================================
-      # BLENDER SOURCE LFS
+      # 5. FETCH startup.blend FROM OFFICIAL BLENDER LFS
       # ============================================================
 
       - name: Fetch Blender startup.blend
@@ -109,11 +113,22 @@ jobs:
 
           test -f release/datafiles/startup.blend
 
-          ls -lh release/datafiles/startup.blend
+          SIZE="$(
+            stat -f '%z' release/datafiles/startup.blend
+          )"
+
+          echo "startup.blend size: $SIZE"
+
+          if [ "$SIZE" -lt 1024 ]; then
+            echo "ERROR: startup.blend is still an LFS pointer."
+            exit 1
+          fi
+
           file release/datafiles/startup.blend
+          ls -lh release/datafiles/startup.blend
 
       # ============================================================
-      # DETERMINE SALMAZOV LIBRARY REVISIONS
+      # 6. DETERMINE EXACT LIBRARY REVISIONS PINNED BY SALMAZOV
       # ============================================================
 
       - name: Determine library revisions
@@ -121,17 +136,25 @@ jobs:
         run: |
           set -eux
 
-          IOS_SHA="$(git rev-parse HEAD:lib/ios_arm64)"
-          MAC_SHA="$(git rev-parse HEAD:lib/macos_arm64)"
+          IOS_SHA="$(
+            git rev-parse HEAD:lib/ios_arm64
+          )"
+
+          MAC_SHA="$(
+            git rev-parse HEAD:lib/macos_arm64
+          )"
 
           echo "ios=$IOS_SHA" >> "$GITHUB_OUTPUT"
           echo "mac=$MAC_SHA" >> "$GITHUB_OUTPUT"
 
-          echo "iOS:   $IOS_SHA"
-          echo "macOS: $MAC_SHA"
+          echo "Pinned iOS libs:"
+          echo "$IOS_SHA"
+
+          echo "Pinned macOS libs:"
+          echo "$MAC_SHA"
 
       # ============================================================
-      # RESTORE IOS LIB CACHE
+      # 7. RESTORE IOS LIBRARY CACHE
       # ============================================================
 
       - name: Restore iOS library cache
@@ -144,7 +167,7 @@ jobs:
           key: ios-arm64-${{ steps.libs.outputs.ios }}-v4
 
       # ============================================================
-      # RESTORE MAC LIB CACHE
+      # 8. RESTORE MACOS LIBRARY CACHE
       # ============================================================
 
       - name: Restore macOS library cache
@@ -157,7 +180,10 @@ jobs:
           key: macos-arm64-${{ steps.libs.outputs.mac }}-v4
 
       # ============================================================
-      # FETCH IOS PREBUILT LIBRARIES
+      # 9. FETCH IOS PREBUILT LIBRARIES
+      #
+      # Salmazov has update=none for this submodule.
+      # Override it explicitly.
       # ============================================================
 
       - name: Fetch iOS prebuilt libraries
@@ -167,7 +193,8 @@ jobs:
         run: |
           set -euxo pipefail
 
-          git submodule init lib/ios_arm64
+          git submodule init \
+            lib/ios_arm64
 
           git config \
             submodule.lib/ios_arm64.update \
@@ -183,12 +210,13 @@ jobs:
               rev-parse --show-toplevel
           )"
 
-          echo "=== iOS repository ==="
+          echo "===== iOS repository ====="
           echo "$IOS_ROOT"
 
           test "$IOS_ROOT" = \
             "$GITHUB_WORKSPACE/lib/ios_arm64"
 
+          echo "===== iOS remote ====="
           git -C lib/ios_arm64 remote -v
 
           ACTUAL="$(
@@ -196,26 +224,40 @@ jobs:
               rev-parse HEAD
           )"
 
-          echo "Actual:   $ACTUAL"
-          echo "Expected: ${{ steps.libs.outputs.ios }}"
+          EXPECTED="${{ steps.libs.outputs.ios }}"
 
-          test "$ACTUAL" = \
-            "${{ steps.libs.outputs.ios }}"
+          echo "Actual:   $ACTUAL"
+          echo "Expected: $EXPECTED"
+
+          test "$ACTUAL" = "$EXPECTED"
 
           git -C lib/ios_arm64 \
             lfs install --local
+
+          echo "===== iOS LFS environment ====="
+
+          git -C lib/ios_arm64 \
+            lfs env
+
+          echo "===== Downloading iOS objects ====="
 
           git -C lib/ios_arm64 \
             lfs pull \
             2>&1 | tee ios-lfs.log
 
+          echo "===== Verify iOS Python ====="
+
           test -f \
             lib/ios_arm64/python/lib/libpython3.11.a
 
-          du -sh lib/ios_arm64
+          ls -lh \
+            lib/ios_arm64/python/lib/libpython3.11.a
+
+          du -sh \
+            lib/ios_arm64
 
       # ============================================================
-      # FETCH MACOS HOST LIBRARIES
+      # 10. FETCH MACOS ARM64 HOST LIBRARIES
       # ============================================================
 
       - name: Fetch macOS host libraries
@@ -225,7 +267,8 @@ jobs:
         run: |
           set -euxo pipefail
 
-          git submodule init lib/macos_arm64
+          git submodule init \
+            lib/macos_arm64
 
           git config \
             submodule.lib/macos_arm64.update \
@@ -241,12 +284,13 @@ jobs:
               rev-parse --show-toplevel
           )"
 
-          echo "=== macOS repository ==="
+          echo "===== macOS repository ====="
           echo "$MAC_ROOT"
 
           test "$MAC_ROOT" = \
             "$GITHUB_WORKSPACE/lib/macos_arm64"
 
+          echo "===== macOS remote ====="
           git -C lib/macos_arm64 remote -v
 
           ACTUAL="$(
@@ -254,26 +298,35 @@ jobs:
               rev-parse HEAD
           )"
 
-          echo "Actual:   $ACTUAL"
-          echo "Expected: ${{ steps.libs.outputs.mac }}"
+          EXPECTED="${{ steps.libs.outputs.mac }}"
 
-          test "$ACTUAL" = \
-            "${{ steps.libs.outputs.mac }}"
+          echo "Actual:   $ACTUAL"
+          echo "Expected: $EXPECTED"
+
+          test "$ACTUAL" = "$EXPECTED"
 
           git -C lib/macos_arm64 \
             lfs install --local
+
+          echo "===== macOS LFS environment ====="
+
+          git -C lib/macos_arm64 \
+            lfs env
+
+          echo "===== Downloading macOS objects ====="
 
           git -C lib/macos_arm64 \
             lfs pull \
             2>&1 | tee macos-lfs.log
 
-          du -sh lib/macos_arm64
+          du -sh \
+            lib/macos_arm64
 
       # ============================================================
-      # VERIFY LIBRARIES
+      # 11. VERIFY PREBUILT LIBRARIES
       # ============================================================
 
-      - name: Verify libraries
+      - name: Verify prebuilt libraries
         run: |
           set -eux
 
@@ -289,21 +342,26 @@ jobs:
               -print -quit
           )"
 
-          test -n "$HOST_PYTHON"
+          if [ -z "$HOST_PYTHON" ]; then
+            echo "ERROR: macOS host Python missing."
+            exit 1
+          fi
 
-          echo "=== iOS Python ==="
+          echo "===== iOS Python ====="
+
           ls -lh \
             lib/ios_arm64/python/lib/libpython3.11.a
 
-          echo "=== Host Python ==="
+          echo "===== Host Python ====="
           echo "$HOST_PYTHON"
 
-          echo "=== Sizes ==="
+          echo "===== Library sizes ====="
+
           du -sh lib/ios_arm64
           du -sh lib/macos_arm64
 
       # ============================================================
-      # SAVE LIBRARY CACHES
+      # 12. SAVE IOS LIBRARY CACHE
       # ============================================================
 
       - name: Save iOS library cache
@@ -315,6 +373,10 @@ jobs:
             .git/modules/lib/ios_arm64
           key: ios-arm64-${{ steps.libs.outputs.ios }}-v4
 
+      # ============================================================
+      # 13. SAVE MACOS LIBRARY CACHE
+      # ============================================================
+
       - name: Save macOS library cache
         if: steps.mac-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -325,16 +387,130 @@ jobs:
           key: macos-arm64-${{ steps.libs.outputs.mac }}-v4
 
       # ============================================================
-      # ADD SHLOK / NENDO TOUCHVIEW
+      # 14. FIX THE REAL FMT PROBLEM
+      #
+      # Salmazov's iOS dependency bundle is exposing the fmt copy
+      # vendored inside OpenImageIO.
+      #
+      # Blender 5.2 expects its own newer fmt.
+      #
+      # Read FMT_VERSION directly from Blender's versions.cmake,
+      # download that exact version, and force it before OIIO's
+      # -isystem include directory.
+      # ============================================================
+
+      - name: Install Blender-matching fmt headers
+        run: |
+          set -euxo pipefail
+
+          VERSIONS_FILE="build_files/build_environment/cmake/versions.cmake"
+
+          test -f "$VERSIONS_FILE"
+
+          FMT_VERSION="$(
+            python3 <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path(
+              "build_files/build_environment/cmake/versions.cmake"
+          ).read_text()
+
+          match = re.search(
+              r'set\s*\(\s*FMT_VERSION\s+([^\s\)]+)',
+              text
+          )
+
+          if not match:
+              raise SystemExit("Could not determine FMT_VERSION")
+
+          print(match.group(1))
+          PY
+          )"
+
+          if [ -z "$FMT_VERSION" ]; then
+            echo "ERROR: FMT_VERSION is empty."
+            exit 1
+          fi
+
+          echo "===== Blender expects fmt ====="
+          echo "$FMT_VERSION"
+
+          echo "$FMT_VERSION" > fmt-version.txt
+
+          rm -rf \
+            "$GITHUB_WORKSPACE/.deps/fmt"
+
+          rm -f \
+            "$GITHUB_WORKSPACE/.deps/fmt.tar.gz"
+
+          mkdir -p \
+            "$GITHUB_WORKSPACE/.deps/fmt"
+
+          echo "===== Download matching fmt ====="
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 2 \
+            "https://github.com/fmtlib/fmt/archive/refs/tags/${FMT_VERSION}.tar.gz" \
+            -o "$GITHUB_WORKSPACE/.deps/fmt.tar.gz"
+
+          tar \
+            -xzf "$GITHUB_WORKSPACE/.deps/fmt.tar.gz" \
+            -C "$GITHUB_WORKSPACE/.deps/fmt" \
+            --strip-components=1
+
+          FMT_INCLUDE="$GITHUB_WORKSPACE/.deps/fmt/include"
+
+          test -f \
+            "$FMT_INCLUDE/fmt/format.h"
+
+          test -f \
+            "$FMT_INCLUDE/fmt/core.h" \
+            || test -f "$FMT_INCLUDE/fmt/base.h"
+
+          echo "FMT_INCLUDE=$FMT_INCLUDE" \
+            >> "$GITHUB_ENV"
+
+          echo "===== New fmt include directory ====="
+          echo "$FMT_INCLUDE"
+
+          echo "===== New fmt version macro ====="
+
+          grep -R \
+            -m1 \
+            '#define FMT_VERSION' \
+            "$FMT_INCLUDE/fmt" \
+            || true
+
+          echo
+          echo "===== Old OpenImageIO vendored fmt ====="
+
+          grep -R \
+            -m1 \
+            '#define FMT_VERSION' \
+            lib/ios_arm64/openimageio/include/OpenImageIO/detail/fmt \
+            || true
+
+          echo
+          echo "IMPORTANT:"
+          echo "We are NOT deleting OpenImageIO's fmt."
+          echo "We are making Blender's own fmt headers take precedence."
+
+      # ============================================================
+      # 15. ADD SHLOK / NENDO TOUCHVIEW
       # ============================================================
 
       - name: Add Shlok TouchView
         env:
           GIT_LFS_SKIP_SMUDGE: "1"
         run: |
-          set -eux
+          set -euxo pipefail
 
-          rm -rf /tmp/shlok
+          rm -rf \
+            /tmp/shlok
 
           GIT_LFS_SKIP_SMUDGE=1 \
             git clone \
@@ -366,7 +542,7 @@ jobs:
             /tmp/shlok/scripts/startup/touchview_ios_startup.py \
             scripts/startup/touchview_ios_startup.py
 
-          echo "=== TouchView copied ==="
+          echo "===== TouchView ====="
 
           find \
             scripts/addons_core/touchview \
@@ -374,119 +550,59 @@ jobs:
             -type f \
             | head -100
 
-          echo "=== Auto-start ==="
+          echo "===== Auto-start ====="
 
           cat \
             scripts/startup/touchview_ios_startup.py
 
       # ============================================================
-      # PATCH BLENDER 5.2 / OLD IOS FMT INCOMPATIBILITY
+      # 16. VERIFY WE ARE NOT APPLYING THE OLD SOURCE HACKS
       #
-      # The iOS libraries expose OpenImageIO's older vendored fmt.
-      #
-      # Blender 5.2 node_geo_join_bundle.cc attempts:
-      #
-      # fmt::join(overridden_keys, ", ")
-      #
-      # The older fmt cannot format BundleKey.
-      #
-      # Keep the warning, omit only its key list.
+      # This build fixes fmt itself instead of patching every
+      # fmt::join() call one at a time.
       # ============================================================
 
-      - name: Patch iOS fmt BundleKey incompatibility
+      - name: Show previously failing fmt calls
         run: |
-          set -euxo pipefail
+          set -eux
 
-          FILE="source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc"
+          echo "===== geometry_nodes_bundle.cc ====="
 
-          test -f "$FILE"
-
-          echo "=== Before patch ==="
-
-          grep -n -A 4 -B 4 \
-            'fmt::join(overridden_keys' \
-            "$FILE" \
+          grep -n -A 2 -B 2 \
+            'fmt::join(path' \
+            source/blender/nodes/intern/geometry_nodes_bundle.cc \
             || true
 
-          python3 <<'PY'
-          from pathlib import Path
+          echo "===== node_geo_join_bundle.cc ====="
 
-          path = Path(
-              "source/blender/nodes/geometry/nodes/"
-              "node_geo_join_bundle.cc"
-          )
-
-          source = path.read_text()
-
-          old = '''    std::string message = fmt::format(
-                  "{}: {}", TIP_("Duplicate keys"), fmt::join(overridden_keys, ", "));
-          '''
-
-          new = '''    std::string message = TIP_("Duplicate keys");
-          '''
-
-          if old not in source:
-              print("Exact text did not match; trying flexible patch.")
-
-              import re
-
-              pattern = re.compile(
-                  r'''    std::string message = fmt::format\(\s*
-                      "\{\}: \{\}",\s*
-                      TIP_\("Duplicate keys"\),\s*
-                      fmt::join\(overridden_keys,\s*", "\)\s*
-                      \);''',
-                  re.VERBOSE | re.MULTILINE,
-              )
-
-              source, count = pattern.subn(
-                  '    std::string message = TIP_("Duplicate keys");',
-                  source,
-                  count=1,
-              )
-
-              if count != 1:
-                  raise SystemExit(
-                      "ERROR: Could not patch "
-                      "node_geo_join_bundle.cc"
-                  )
-          else:
-              source = source.replace(old, new, 1)
-
-          path.write_text(source)
-
-          print("Patch applied successfully.")
-          PY
-
-          echo "=== After patch ==="
-
-          grep -n -A 4 -B 4 \
-            'Duplicate keys' \
-            "$FILE"
-
-          if grep -q \
+          grep -n -A 2 -B 2 \
             'fmt::join(overridden_keys' \
-            "$FILE"
-          then
-            echo "ERROR: broken fmt::join is still present"
-            exit 1
-          fi
-
-          echo "=== fmt workaround installed ==="
+            source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
+            || true
 
       # ============================================================
-      # CONFIGURE
+      # 17. CONFIGURE FOR PHYSICAL IOS DEVICE
       #
-      # Python: ON for TouchView.
-      # Cycles: OFF.
-      # Audio: OFF.
+      # IMPORTANT:
+      #
+      # - Python ON: TouchView needs bpy.
+      # - Cycles OFF: avoids the previous cycles CPU kernel failure.
+      # - Audaspace OFF: iOS build.
+      # - Tests OFF: unnecessary for IPA.
+      #
+      # CMAKE_CXX_FLAGS forces the correct fmt include directory.
+      # CPATH/CPLUS_INCLUDE_PATH add a second layer of protection.
       # ============================================================
 
       - name: Configure Blender for iPad
+        env:
+          CPATH: ${{ env.FMT_INCLUDE }}
+          CPLUS_INCLUDE_PATH: ${{ env.FMT_INCLUDE }}
         run: |
           set -euxo pipefail
 
-          rm -rf build_ios
+          rm -rf \
+            build_ios
 
           IOS_LIBDIR="$GITHUB_WORKSPACE/lib/ios_arm64"
 
@@ -500,11 +616,17 @@ jobs:
             dirname "$IOS_SDK_ROOT"
           )"
 
-          echo "=== SDK ==="
+          echo "===== SDK ====="
           echo "$IOS_SDK_ROOT"
 
-          echo "=== LIBDIR ==="
+          echo "===== iOS LIBDIR ====="
           echo "$IOS_LIBDIR"
+
+          echo "===== fmt ====="
+          echo "$FMT_INCLUDE"
+
+          echo "===== CPATH ====="
+          echo "$CPATH"
 
           cmake \
             -S . \
@@ -515,22 +637,37 @@ jobs:
             -DWITH_APPLE_CROSSPLATFORM=ON \
             -DAPPLE_TARGET_DEVICE=ios \
             -DWITH_PYTHON=ON \
+            -DWITH_PYTHON_NUMPY=OFF \
+            -DWITH_PYTHON_INSTALL_NUMPY=OFF \
             -DWITH_CYCLES=OFF \
             -DWITH_AUDASPACE=OFF \
             -DWITH_INSTALL_PORTABLE=OFF \
+            -DWITH_GTESTS=OFF \
+            -DWITH_TESTS_BATCHED=OFF \
+            -DWITH_UI_TESTS=OFF \
+            -DCMAKE_CXX_FLAGS="-I${FMT_INCLUDE}" \
             -DCMAKE_FIND_ROOT_PATH="$IOS_DEV_ROOT;$(dirname "$IOS_DEV_ROOT");$IOS_LIBDIR" \
             2>&1 | tee configure.log
 
           echo
-          echo "=== Important settings ==="
+          echo "===== Important CMake values ====="
 
           grep -E \
-            'WITH_CYCLES:|WITH_PYTHON:|WITH_AUDASPACE:|WITH_INSTALL_PORTABLE:' \
+            'WITH_CYCLES:|WITH_PYTHON:|WITH_PYTHON_NUMPY:|WITH_AUDASPACE:|WITH_INSTALL_PORTABLE:|CMAKE_CXX_FLAGS:' \
             build_ios/CMakeCache.txt \
             || true
 
+          echo
+          echo "===== Check fmt include was recorded ====="
+
+          grep -R \
+            "$FMT_INCLUDE" \
+            build_ios \
+            | head -30 \
+            || true
+
       # ============================================================
-      # LIST GENERATED XCODE TARGETS
+      # 18. LIST XCODE TARGETS
       # ============================================================
 
       - name: List Xcode targets
@@ -540,10 +677,13 @@ jobs:
             -list
 
       # ============================================================
-      # BUILD HOST CROSS-COMPILE TOOLS FIRST
+      # 19. BUILD HOST CROSS-COMPILE TOOLS FIRST
       # ============================================================
 
       - name: Build Blender cross tools
+        env:
+          CPATH: ${{ env.FMT_INCLUDE }}
+          CPLUS_INCLUDE_PATH: ${{ env.FMT_INCLUDE }}
         run: |
           set -o pipefail
 
@@ -557,22 +697,34 @@ jobs:
             2>&1 | tee cross-tools.log
           then
 
-            echo "=== CROSS TOOLS FAILED ==="
+            echo
+            echo "=============================================="
+            echo "          CROSS TOOLS BUILD FAILED"
+            echo "=============================================="
 
-            grep -n -C 8 \
-              -E 'error:|fatal error:|Undefined symbols|ld: |clang: error:' \
+            grep -n -C 10 \
+              -E \
+              '(^|[[:space:]])error:|fatal error:|Undefined symbols|duplicate symbol|ld: |clang: error:' \
               cross-tools.log \
-              | tail -400 \
+              | tail -600 \
               || true
 
             exit 1
           fi
 
+          echo
+          echo "===== CROSS TOOLS SUCCESS ====="
+
       # ============================================================
-      # BUILD BLENDER
+      # 20. BUILD PHYSICAL IPAD BLENDER
+      #
+      # Keep correct fmt ahead of OIIO's private vendored fmt.
       # ============================================================
 
       - name: Build Blender for physical iPad
+        env:
+          CPATH: ${{ env.FMT_INCLUDE }}
+          CPLUS_INCLUDE_PATH: ${{ env.FMT_INCLUDE }}
         run: |
           set -o pipefail
 
@@ -581,6 +733,10 @@ jobs:
           )"
 
           echo "Using $NCPU build jobs"
+
+          echo "FMT_INCLUDE=$FMT_INCLUDE"
+          echo "CPATH=$CPATH"
+          echo "CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH"
 
           if ! xcodebuild \
             -project build_ios/Blender.xcodeproj \
@@ -604,28 +760,38 @@ jobs:
             echo "================================================"
             echo
 
-            echo "=== Actual compiler/linker errors ==="
+            echo "===== Compiler / linker errors ====="
 
-            grep -n -C 10 \
+            grep -n -C 12 \
               -E \
               '(^|[[:space:]])error:|fatal error:|Undefined symbols|duplicate symbol|ld: |clang: error:|Command .* failed' \
               xcodebuild.log \
-              | tail -800 \
+              | tail -1000 \
               || true
 
             echo
-            echo "=== Failed commands ==="
+            echo "===== fmt references near errors ====="
 
-            grep -n -A 80 \
+            grep -n -C 5 \
+              -E \
+              'fmt/(base|core|format)\.h|FMT_VERSION|fmt::' \
+              xcodebuild.log \
+              | tail -500 \
+              || true
+
+            echo
+            echo "===== Failed build commands ====="
+
+            grep -n -A 100 \
               'The following build commands failed:' \
               xcodebuild.log \
-              | tail -150 \
+              | tail -200 \
               || true
 
             echo
-            echo "=== Last 250 lines ==="
+            echo "===== Last 300 lines ====="
 
-            tail -250 \
+            tail -300 \
               xcodebuild.log \
               || true
 
@@ -634,11 +800,11 @@ jobs:
 
           echo
           echo "================================================"
-          echo "             BLENDER BUILD SUCCESS"
+          echo "            BLENDER BUILD SUCCEEDED"
           echo "================================================"
 
       # ============================================================
-      # FIND BLENDER.APP
+      # 21. FIND BLENDER.APP
       # ============================================================
 
       - name: Find Blender.app
@@ -668,6 +834,8 @@ jobs:
           then
             echo "ERROR: Blender.app not found."
 
+            echo "===== Generated app bundles ====="
+
             find \
               build_ios \
               -type d \
@@ -678,18 +846,20 @@ jobs:
             exit 1
           fi
 
-          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "APP=$APP" \
+            >> "$GITHUB_ENV"
 
-          echo "=== Blender.app ==="
+          echo "===== Blender.app ====="
+
           echo "$APP"
 
           du -sh "$APP"
 
       # ============================================================
-      # VERIFY APP IS PHYSICAL IOS ARM64
+      # 22. VERIFY PHYSICAL ARM64 EXECUTABLE
       # ============================================================
 
-      - name: Verify Blender binary
+      - name: Verify Blender executable
         run: |
           set -eux
 
@@ -698,7 +868,8 @@ jobs:
           if [ ! -f "$EXECUTABLE" ]
           then
             EXECUTABLE="$(
-              find "$APP" \
+              find \
+                "$APP" \
                 -maxdepth 1 \
                 -type f \
                 -perm +111 \
@@ -706,23 +877,31 @@ jobs:
             )"
           fi
 
-          test -n "$EXECUTABLE"
+          if [ -z "$EXECUTABLE" ]
+          then
+            echo "ERROR: executable not found."
+            exit 1
+          fi
 
-          echo "=== Binary ==="
-          file "$EXECUTABLE"
+          echo "===== Executable ====="
+          echo "$EXECUTABLE"
 
-          echo "=== Architecture ==="
-          lipo -info "$EXECUTABLE" || true
+          file \
+            "$EXECUTABLE"
+
+          lipo -info \
+            "$EXECUTABLE" \
+            || true
 
       # ============================================================
-      # VERIFY TOUCHVIEW PACKAGED
+      # 23. VERIFY TOUCHVIEW INSIDE BLENDER.APP
       # ============================================================
 
       - name: Verify TouchView inside Blender.app
         run: |
           set -eux
 
-          echo "=== TouchView files ==="
+          echo "===== TouchView files ====="
 
           find \
             "$APP" \
@@ -751,31 +930,53 @@ jobs:
 
           if [ -z "$STARTUP" ]
           then
-            echo "ERROR: TouchView auto-start was not packaged."
+            echo "ERROR: TouchView auto-start script missing."
             exit 1
           fi
 
           if [ -z "$TOUCHVIEW" ]
           then
-            echo "ERROR: TouchView add-on was not packaged."
+            echo "ERROR: TouchView add-on missing."
             exit 1
           fi
 
-          echo "TouchView:"
+          echo "===== TouchView add-on ====="
           echo "$TOUCHVIEW"
 
-          echo "Auto-start:"
+          echo "===== TouchView auto-start ====="
           echo "$STARTUP"
 
       # ============================================================
-      # PACKAGE IPA
+      # 24. OPTIONAL SIZE CLEANUP
+      # ============================================================
+
+      - name: Clean unnecessary packaged files
+        run: |
+          set -eux
+
+          rm -rf \
+            "$APP/Assets/5.2/python/lib/python3.11/config-3.11-darwin" \
+            || true
+
+          rm -rf \
+            "$APP/Assets/5.2/python/lib/python3.13/config-3.13-darwin" \
+            || true
+
+          du -sh "$APP"
+
+      # ============================================================
+      # 25. PACKAGE STANDARD UNSIGNED IPA
+      #
+      # Payload/
+      # └── Blender.app/
       # ============================================================
 
       - name: Package unsigned IPA
         run: |
           set -eux
 
-          rm -rf package
+          rm -rf \
+            package
 
           mkdir -p \
             package/Payload
@@ -794,18 +995,18 @@ jobs:
 
           cd ..
 
-          echo "=== Finished IPA ==="
+          echo "===== IPA ====="
 
           ls -lh \
             Blender-5.2-iPad-TouchView.ipa
 
-          echo "=== IPA structure ==="
+          echo "===== IPA root ====="
 
           unzip -l \
             Blender-5.2-iPad-TouchView.ipa \
-            | head -30
+            | head -40
 
-          echo "=== TouchView in IPA ==="
+          echo "===== TouchView inside IPA ====="
 
           unzip -l \
             Blender-5.2-iPad-TouchView.ipa \
@@ -813,7 +1014,7 @@ jobs:
             | head -100
 
       # ============================================================
-      # UPLOAD IPA
+      # 26. UPLOAD FINISHED IPA
       # ============================================================
 
       - name: Upload Blender IPA
@@ -824,7 +1025,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # ALWAYS UPLOAD LOGS
+      # 27. ALWAYS UPLOAD DEBUG LOGS
       # ============================================================
 
       - name: Upload build logs
@@ -833,6 +1034,7 @@ jobs:
         with:
           name: blender-ipad-build-logs
           path: |
+            fmt-version.txt
             source-lfs.log
             ios-lfs.log
             macos-lfs.log
