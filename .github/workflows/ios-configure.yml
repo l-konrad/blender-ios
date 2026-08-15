@@ -1,90 +1,282 @@
-name: iOS configure
+name: Build Blender iPad + TouchView
 
 on:
-  push:
-    branches: [ios-new, main]
-  pull_request:
-    branches: [ios-new]
   workflow_dispatch:
 
-# Keep only the latest run per branch to save CI minutes.
 concurrency:
-  group: ios-configure-${{ github.ref }}
+  group: blender-ipad-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  configure:
-    name: CMake configure (Xcode generator, iOS SDK)
+  build:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 180
 
     steps:
-      - name: Checkout
+      - name: Checkout Salmazov
         uses: actions/checkout@v4
         with:
-          # Do not fetch LFS — not needed for a configure-only step and
-          # adds ~multi-GB of bandwidth.
+          fetch-depth: 1
           lfs: false
           submodules: false
 
-      - name: Select Xcode
+      - name: Show environment
         run: |
-          sudo xcode-select -s /Applications/Xcode.app
+          uname -a
+          uname -m
+          sw_vers
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
+          df -h
 
-      - name: Install CMake
+      - name: Free disk space
         run: |
-          # GitHub runners ship an old-ish cmake; use the latest stable.
-          brew update --quiet
-          brew install cmake ninja
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf ~/Library/Android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles || true
+          sudo xcrun simctl delete all 2>/dev/null || true
+          df -h
+
+      - name: Install build tools
+        run: |
+          brew install cmake git-lfs
+          git lfs install
           cmake --version
+          git lfs version
 
-      - name: Configure (iOS device, Xcode generator)
-        env:
-          GIT_LFS_SKIP_SMUDGE: '1'
+      # Salmazov's fork is itself a Blender fork, and some source assets
+      # such as startup.blend are Git-LFS objects.
+      - name: Fetch required Blender source LFS assets
         run: |
-          # Configure-only. We do NOT build because that requires the
-          # ~GB-scale pre-built library bundle (lib/ios_arm64) which is
-          # fetched via Git LFS from a private mirror. Configure-only
-          # catches 60%+ of rebase breakage: missing CMake options,
-          # syntactic errors in our CMake, missing files, bad guards.
-          cmake -S . -B build_ios_ci \
+          git config lfs.remote.searchall true
+
+          git remote add blender-lfs \
+            https://projects.blender.org/blender/blender.git \
+            2>/dev/null || true
+
+          git lfs fetch blender-lfs \
+            --include="release/datafiles/startup.blend"
+
+          git lfs checkout release/datafiles/startup.blend
+
+          file release/datafiles/startup.blend
+          ls -lh release/datafiles/startup.blend
+
+      # Fetch exactly the library revisions pinned by Salmazov ios-new.
+      - name: Initialize prebuilt library repositories
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          git submodule sync --recursive
+
+          GIT_LFS_SKIP_SMUDGE=1 \
+            git submodule update --init --depth 1 lib/ios_arm64
+
+          GIT_LFS_SKIP_SMUDGE=1 \
+            git submodule update --init --depth 1 lib/macos_arm64
+
+          echo "iOS libs commit:"
+          git -C lib/ios_arm64 rev-parse HEAD
+
+          echo "macOS libs commit:"
+          git -C lib/macos_arm64 rev-parse HEAD
+
+      - name: Fetch iOS prebuilt libraries
+        run: |
+          set -o pipefail
+
+          git -C lib/ios_arm64 lfs install --local
+
+          git -C lib/ios_arm64 lfs pull 2>&1 | tee ios-lfs.log
+
+          test -f lib/ios_arm64/python/lib/libpython3.11.a
+
+          echo "iOS libraries fetched successfully"
+          du -sh lib/ios_arm64
+
+      - name: Fetch macOS host libraries
+        run: |
+          set -o pipefail
+
+          git -C lib/macos_arm64 lfs install --local
+
+          git -C lib/macos_arm64 lfs pull 2>&1 | tee macos-lfs.log
+
+          HOST_PYTHON="$(
+            find lib/macos_arm64/python/bin \
+              -name 'python3.*' \
+              -not -name '*config*' \
+              -print -quit
+          )"
+
+          if [ -z "$HOST_PYTHON" ]; then
+            echo "macOS host Python missing"
+            exit 1
+          fi
+
+          echo "Host Python: $HOST_PYTHON"
+          du -sh lib/macos_arm64
+
+      # Pull only Shlok's source tree and copy the two TouchView pieces.
+      - name: Add Shlok TouchView
+        run: |
+          git clone \
+            --depth 1 \
+            --filter=blob:none \
+            --sparse \
+            https://github.com/Shlok-Bhakta/blender-ios-build.git \
+            /tmp/shlok
+
+          git -C /tmp/shlok sparse-checkout set \
+            scripts/addons_core/touchview \
+            scripts/startup/touchview_ios_startup.py
+
+          rm -rf scripts/addons_core/touchview
+
+          cp -R \
+            /tmp/shlok/scripts/addons_core/touchview \
+            scripts/addons_core/touchview
+
+          cp \
+            /tmp/shlok/scripts/startup/touchview_ios_startup.py \
+            scripts/startup/touchview_ios_startup.py
+
+          echo "TouchView files:"
+          find scripts/addons_core/touchview -maxdepth 2 -type f | head -30
+
+          echo "Auto-start script:"
+          cat scripts/startup/touchview_ios_startup.py
+
+      - name: Configure Blender for physical iPad
+        run: |
+          rm -rf build_ios
+          mkdir build_ios
+
+          IOS_LIBDIR="$PWD/lib/ios_arm64"
+          IOS_SDK_ROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+          IOS_DEV_ROOT="$(dirname "$IOS_SDK_ROOT")"
+
+          cmake \
+            -S . \
+            -B build_ios \
             -G Xcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DAPPLE_TARGET_DEVICE=ios \
             -DWITH_APPLE_CROSSPLATFORM=ON \
-            -DWITH_PYTHON=OFF \
-            -DWITH_CYCLES=OFF \
-            -DWITH_AUDASPACE=OFF \
-            -DWITH_INSTALL_PORTABLE=OFF \
-            --no-warn-unused-cli \
-            2>&1 | tee configure.log
-          echo "---"
-          # Surface any non-fatal warnings that smell like real problems.
-          ! grep -E '^CMake (Warning|Error)' configure.log | \
-            grep -Ev 'find_package|Could NOT find' || true
+            -DAPPLE_TARGET_DEVICE=ios \
+            -DCMAKE_FIND_ROOT_PATH="$IOS_DEV_ROOT;$(dirname "$IOS_DEV_ROOT");$IOS_LIBDIR"
 
-      - name: Upload configure log
-        if: always()
+      - name: Show Xcode targets
+        run: |
+          xcodebuild \
+            -project build_ios/Blender.xcodeproj \
+            -list
+
+      - name: Build Blender for iPad
+        run: |
+          NCPU="$(sysctl -n hw.ncpu)"
+
+          xcodebuild \
+            -project build_ios/Blender.xcodeproj \
+            -scheme blender \
+            -configuration Release \
+            -sdk iphoneos \
+            -jobs "$NCPU" \
+            ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build \
+            2>&1 | tee xcodebuild.log
+
+      - name: Locate Blender.app
+        run: |
+          APP="$(
+            find build_ios \
+              -type d \
+              -name 'Blender.app' \
+              -print -quit
+          )"
+
+          if [ -z "$APP" ]; then
+            echo "ERROR: Blender.app was not produced."
+            find build_ios -type d -name '*.app' -print
+            exit 1
+          fi
+
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
+          echo "Found Blender at:"
+          echo "$APP"
+
+          du -sh "$APP"
+
+      - name: Verify TouchView was bundled
+        run: |
+          echo "Searching packaged app for TouchView..."
+
+          find "$APP" \
+            \( -iname '*touchview*' \
+            -o -name 'touchview_ios_startup.py' \) \
+            -print | head -50
+
+          COUNT="$(
+            find "$APP" \
+              -name 'touchview_ios_startup.py' \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          if [ "$COUNT" = "0" ]; then
+            echo "ERROR: TouchView startup script was not copied into Blender.app"
+            exit 1
+          fi
+
+      - name: Package unsigned IPA
+        run: |
+          rm -rf ipa
+          mkdir -p ipa/Payload
+
+          ditto \
+            "$APP" \
+            ipa/Payload/Blender.app
+
+          cd ipa
+
+          zip \
+            -qry \
+            -y \
+            ../Blender-5.2-iPad-TouchView.ipa \
+            Payload
+
+          cd ..
+
+          ls -lh Blender-5.2-iPad-TouchView.ipa
+
+          unzip -l Blender-5.2-iPad-TouchView.ipa \
+            | grep -i touchview \
+            | head -30
+
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: cmake-configure-log
-          path: configure.log
+          name: Blender-5.2-iPad-TouchView
+          path: Blender-5.2-iPad-TouchView.ipa
+          retention-days: 30
+
+      - name: Upload build logs if something fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-ios-build-logs
+          path: |
+            ios-lfs.log
+            macos-lfs.log
+            xcodebuild.log
+            build_ios/CMakeCache.txt
+            build_ios/**/*.log
           if-no-files-found: ignore
           retention-days: 7
-
-  shellcheck:
-    name: Shellcheck iOS scripts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
-      - name: Run shellcheck
-        run: |
-          shellcheck -x setup_ios.sh || true
-          shellcheck -x release/ios/scripts/*.sh
