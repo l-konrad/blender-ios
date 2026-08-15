@@ -1,4 +1,4 @@
-name: Build Blender iOS - Cycles OFF + BundleKey Fix
+name: Build Blender iOS - Fixed
 
 on:
   workflow_dispatch:
@@ -15,55 +15,55 @@ jobs:
 
     steps:
       # ============================================================
-      # 1. CHECKOUT THE EXACT SOURCE REVISION WE JUST TESTED
-      #
-      # This is the exact ios-new commit from build-revision.txt:
-      #
-      # 1e391616fea93b759ac5ad73cdbbbcb7f2fa08e6
-      #
-      # Do NOT follow moving ios-new HEAD for this build.
+      # 1. CHECKOUT SALMAZOV IOS-NEW
       # ============================================================
 
-      - name: Checkout pinned Salmazov Blender iOS
+      - name: Checkout Salmazov ios-new
         uses: actions/checkout@v6
         with:
           repository: salmazov/blender-ios
-          ref: 1e391616fea93b759ac5ad73cdbbbcb7f2fa08e6
+          ref: ios-new
           fetch-depth: 1
           lfs: false
           submodules: false
           persist-credentials: false
 
       # ============================================================
-      # 2. VERIFY EXACT SOURCE
+      # 2. PIN EXACT SOURCE COMMIT
+      #
+      # Exact commit from our last build:
+      # 1e391616fea93b759ac5ad73cdbbbcb7f2fa08e6
       # ============================================================
 
-      - name: Verify source revision
+      - name: Checkout exact Blender source commit
         run: |
-          set -eux
+          set -euxo pipefail
 
           EXPECTED="1e391616fea93b759ac5ad73cdbbbcb7f2fa08e6"
+
+          git fetch \
+            origin \
+            "$EXPECTED" \
+            --depth=1
+
+          git checkout \
+            --detach \
+            FETCH_HEAD
+
           ACTUAL="$(git rev-parse HEAD)"
 
-          echo "========================================"
-          echo "BLENDER SOURCE"
-          echo "========================================"
-          echo
           echo "Expected: $EXPECTED"
           echo "Actual:   $ACTUAL"
-          echo
 
           test "$ACTUAL" = "$EXPECTED"
 
           git log -1 --oneline
 
-          echo "BLENDER_SOURCE_SHA=$ACTUAL" >> "$GITHUB_ENV"
-
       # ============================================================
       # 3. ENVIRONMENT
       # ============================================================
 
-      - name: Show build environment
+      - name: Show environment
         run: |
           set -eux
 
@@ -73,7 +73,7 @@ jobs:
           sw_vers
 
           echo
-          echo "===== Architecture ====="
+          echo "===== CPU ====="
           uname -m
 
           echo
@@ -90,11 +90,15 @@ jobs:
           git --version
 
           echo
+          echo "===== Source commit ====="
+          git rev-parse HEAD
+
+          echo
           echo "===== Disk ====="
           df -h
 
       # ============================================================
-      # 4. FREE RUNNER DISK SPACE
+      # 4. FREE DISK SPACE
       # ============================================================
 
       - name: Free disk space
@@ -113,7 +117,7 @@ jobs:
           df -h
 
       # ============================================================
-      # 5. INSTALL TOOLS
+      # 5. INSTALL BUILD TOOLS
       # ============================================================
 
       - name: Install build tools
@@ -136,10 +140,7 @@ jobs:
           python3 --version
 
       # ============================================================
-      # 6. FETCH BLENDER startup.blend
-      #
-      # Salmazov's GitHub fork does not host every Blender LFS
-      # object. Fetch this one directly from Blender upstream.
+      # 6. FETCH startup.blend
       # ============================================================
 
       - name: Fetch Blender startup.blend
@@ -172,7 +173,6 @@ jobs:
               release/datafiles/startup.blend
           )"
 
-          echo
           echo "startup.blend size: $SIZE"
 
           if [ "$SIZE" -lt 1024 ]; then
@@ -184,9 +184,7 @@ jobs:
             release/datafiles/startup.blend
 
       # ============================================================
-      # 7. DETERMINE EXACT PREBUILT LIBRARY REVISIONS
-      #
-      # These are read directly from this source commit's gitlinks.
+      # 7. DETERMINE PINNED LIBRARY COMMITS
       # ============================================================
 
       - name: Determine library revisions
@@ -219,27 +217,23 @@ jobs:
           echo "ios_url=$IOS_URL" >> "$GITHUB_OUTPUT"
           echo "mac_url=$MAC_URL" >> "$GITHUB_OUTPUT"
 
-          echo "========================================"
-          echo "PREBUILT LIBRARY REVISIONS"
-          echo "========================================"
+          echo
+          echo "===== iOS libraries ====="
+          echo "$IOS_URL"
+          echo "$IOS_SHA"
 
           echo
-          echo "iOS:"
-          echo "  $IOS_URL"
-          echo "  $IOS_SHA"
-
-          echo
-          echo "macOS:"
-          echo "  $MAC_URL"
-          echo "  $MAC_SHA"
+          echo "===== macOS libraries ====="
+          echo "$MAC_URL"
+          echo "$MAC_SHA"
 
       # ============================================================
-      # 8. VERIFY EXPECTED LIBRARY REVISIONS
+      # 8. VERIFY LIBRARY COMMITS
       #
-      # These are also recorded in your successful configure run.
+      # These are the exact revisions from our last run.
       # ============================================================
 
-      - name: Verify pinned library revisions
+      - name: Verify expected library revisions
         run: |
           set -eux
 
@@ -249,14 +243,12 @@ jobs:
           ACTUAL_IOS="${{ steps.libs.outputs.ios_sha }}"
           ACTUAL_MAC="${{ steps.libs.outputs.mac_sha }}"
 
-          echo "===== iOS ====="
-          echo "Expected: $EXPECTED_IOS"
-          echo "Actual:   $ACTUAL_IOS"
+          echo "iOS expected: $EXPECTED_IOS"
+          echo "iOS actual:   $ACTUAL_IOS"
 
           echo
-          echo "===== macOS ====="
-          echo "Expected: $EXPECTED_MAC"
-          echo "Actual:   $ACTUAL_MAC"
+          echo "macOS expected: $EXPECTED_MAC"
+          echo "macOS actual:   $ACTUAL_MAC"
 
           test "$ACTUAL_IOS" = "$EXPECTED_IOS"
           test "$ACTUAL_MAC" = "$EXPECTED_MAC"
@@ -270,10 +262,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: lib/ios_arm64
-          key: blender-ios-arm64-${{ steps.libs.outputs.ios_sha }}-v2
+          key: blender-ios-arm64-${{ steps.libs.outputs.ios_sha }}-v3
 
       # ============================================================
-      # 10. CACHE MACOS HOST LIBRARIES
+      # 10. CACHE MACOS LIBRARIES
       # ============================================================
 
       - name: Cache macOS libraries
@@ -281,10 +273,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: lib/macos_arm64
-          key: blender-macos-arm64-${{ steps.libs.outputs.mac_sha }}-v2
+          key: blender-macos-arm64-${{ steps.libs.outputs.mac_sha }}-v3
 
       # ============================================================
-      # 11. FETCH IOS PREBUILT LIBRARIES ON CACHE MISS
+      # 11. FETCH IOS LIBRARIES
       # ============================================================
 
       - name: Fetch iOS libraries
@@ -294,8 +286,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          rm -rf \
-            lib/ios_arm64
+          rm -rf lib/ios_arm64
 
           git clone \
             --filter=blob:none \
@@ -305,7 +296,7 @@ jobs:
 
           git -C lib/ios_arm64 \
             fetch \
-            --depth 1 \
+            --depth=1 \
             origin \
             "${{ steps.libs.outputs.ios_sha }}"
 
@@ -315,8 +306,7 @@ jobs:
             FETCH_HEAD
 
           ACTUAL="$(
-            git -C lib/ios_arm64 \
-              rev-parse HEAD
+            git -C lib/ios_arm64 rev-parse HEAD
           )"
 
           EXPECTED="${{ steps.libs.outputs.ios_sha }}"
@@ -333,11 +323,10 @@ jobs:
             lfs pull \
             2>&1 | tee ios-lfs.log
 
-          du -sh \
-            lib/ios_arm64
+          du -sh lib/ios_arm64
 
       # ============================================================
-      # 12. FETCH MACOS HOST LIBRARIES ON CACHE MISS
+      # 12. FETCH MACOS LIBRARIES
       # ============================================================
 
       - name: Fetch macOS libraries
@@ -347,8 +336,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          rm -rf \
-            lib/macos_arm64
+          rm -rf lib/macos_arm64
 
           git clone \
             --filter=blob:none \
@@ -358,7 +346,7 @@ jobs:
 
           git -C lib/macos_arm64 \
             fetch \
-            --depth 1 \
+            --depth=1 \
             origin \
             "${{ steps.libs.outputs.mac_sha }}"
 
@@ -368,8 +356,7 @@ jobs:
             FETCH_HEAD
 
           ACTUAL="$(
-            git -C lib/macos_arm64 \
-              rev-parse HEAD
+            git -C lib/macos_arm64 rev-parse HEAD
           )"
 
           EXPECTED="${{ steps.libs.outputs.mac_sha }}"
@@ -386,43 +373,30 @@ jobs:
             lfs pull \
             2>&1 | tee macos-lfs.log
 
-          du -sh \
-            lib/macos_arm64
+          du -sh lib/macos_arm64
 
       # ============================================================
-      # 13. VERIFY PREBUILT LIBRARIES
+      # 13. VERIFY LIBRARIES
       # ============================================================
 
       - name: Verify prebuilt libraries
         run: |
           set -eux
 
-          echo "===== iOS revision ====="
-
           IOS_ACTUAL="$(
-            git -C lib/ios_arm64 \
-              rev-parse HEAD
+            git -C lib/ios_arm64 rev-parse HEAD
           )"
 
-          echo "$IOS_ACTUAL"
+          MAC_ACTUAL="$(
+            git -C lib/macos_arm64 rev-parse HEAD
+          )"
 
           test "$IOS_ACTUAL" = \
             "${{ steps.libs.outputs.ios_sha }}"
 
-          echo
-          echo "===== macOS revision ====="
-
-          MAC_ACTUAL="$(
-            git -C lib/macos_arm64 \
-              rev-parse HEAD
-          )"
-
-          echo "$MAC_ACTUAL"
-
           test "$MAC_ACTUAL" = \
             "${{ steps.libs.outputs.mac_sha }}"
 
-          echo
           echo "===== iOS Python ====="
 
           test -f \
@@ -432,7 +406,7 @@ jobs:
             lib/ios_arm64/python/lib/libpython3.11.a
 
           echo
-          echo "===== Host Python ====="
+          echo "===== macOS host Python ====="
 
           HOST_PYTHON="$(
             find \
@@ -444,205 +418,245 @@ jobs:
           )"
 
           if [ -z "$HOST_PYTHON" ]; then
-            echo "ERROR: macOS host Python missing"
+            echo "ERROR: host Python missing"
             exit 1
           fi
 
           echo "$HOST_PYTHON"
 
           echo
-          echo "===== Sizes ====="
+          echo "===== Library sizes ====="
 
-          du -sh \
-            lib/ios_arm64
-
-          du -sh \
-            lib/macos_arm64
+          du -sh lib/ios_arm64
+          du -sh lib/macos_arm64
 
       # ============================================================
-      # 14. PATCH THE OLD FMT / BundleKey INCOMPATIBILITY
+      # 14. PATCH BundleKey / OLD FMT COMPATIBILITY
       #
-      # IMPORTANT:
+      # Expected in this exact source revision:
       #
-      # We are NOT replacing fmt.
-      # We are NOT injecting fmt 12.
-      # We are NOT modifying OpenImageIO.
+      # node_geo_join_bundle.cc:
+      #   1 x fmt::join(overridden_keys, ", ")
       #
-      # We only convert the BundleKey ranges to std::string BEFORE
-      # handing them to the older fmt bundled in the iOS libraries.
+      # geometry_nodes_bundle.cc:
+      #   2 x fmt::join(path, "/")
       #
-      # The first replacement is the exact compile error from the
-      # latest log.
+      # ALL THREE are patched.
       #
-      # The second replacement handles the same BundleKey problem
-      # in geometry_nodes_bundle.cc that appeared in an earlier run.
+      # fmt itself is NOT replaced.
+      # OpenImageIO is NOT modified.
       # ============================================================
 
-      - name: Patch BundleKey formatting compatibility
+      - name: Patch BundleKey formatting
         run: |
           set -euxo pipefail
 
           python3 <<'PY'
           from pathlib import Path
 
-          # --------------------------------------------------------
-          # 1. node_geo_join_bundle.cc
-          # --------------------------------------------------------
+          # ========================================================
+          # node_geo_join_bundle.cc
+          # ========================================================
 
-          path = Path(
+          file1 = Path(
               "source/blender/nodes/geometry/nodes/"
               "node_geo_join_bundle.cc"
           )
 
-          text = path.read_text()
+          text = file1.read_text()
 
-          needle = 'fmt::join(overridden_keys, ", ")'
+          needle1 = 'fmt::join(overridden_keys, ", ")'
 
-          replacement = '''[&]() {
+          replacement1 = '''[&]() {
                 std::string result;
                 for (const auto &key : overridden_keys) {
                   if (!result.empty()) {
                     result += ", ";
                   }
+
                   const auto key_ref = key.ustr().ref();
-                  result.append(key_ref.data(), key_ref.size());
+
+                  result.append(
+                      key_ref.data(),
+                      key_ref.size());
                 }
+
                 return result;
               }()'''
 
-          count = text.count(needle)
+          count1 = text.count(needle1)
 
           print(
               "node_geo_join_bundle.cc occurrences:",
-              count,
+              count1,
           )
 
-          if count != 1:
+          if count1 != 1:
               raise SystemExit(
-                  "ERROR: Expected exactly one "
+                  "ERROR: Expected exactly 1 "
                   "fmt::join(overridden_keys, \", \")"
               )
 
           text = text.replace(
-              needle,
-              replacement,
-              1,
+              needle1,
+              replacement1,
           )
 
-          path.write_text(text)
+          file1.write_text(text)
 
-          print("Patched:", path)
+          print(
+              "Patched:",
+              file1,
+          )
 
-          # --------------------------------------------------------
-          # 2. geometry_nodes_bundle.cc
+          # ========================================================
+          # geometry_nodes_bundle.cc
           #
-          # Same old-fmt BundleKey problem.
-          #
-          # Patch it when present. If this exact source revision no
-          # longer contains it, do not fail the workflow.
-          # --------------------------------------------------------
+          # IMPORTANT:
+          # This exact revision contains TWO occurrences.
+          # ========================================================
 
-          path = Path(
+          file2 = Path(
               "source/blender/nodes/intern/"
               "geometry_nodes_bundle.cc"
           )
 
-          text = path.read_text()
+          text = file2.read_text()
 
-          needle = 'fmt::join(path, "/")'
+          needle2 = 'fmt::join(path, "/")'
 
-          replacement = '''[&]() {
+          replacement2 = '''[&]() {
                 std::string result;
+
                 for (const auto &key : path) {
                   if (!result.empty()) {
                     result += '/';
                   }
+
                   const auto key_ref = key.ustr().ref();
-                  result.append(key_ref.data(), key_ref.size());
+
+                  result.append(
+                      key_ref.data(),
+                      key_ref.size());
                 }
+
                 return result;
               }()'''
 
-          count = text.count(needle)
+          count2 = text.count(needle2)
 
           print(
               "geometry_nodes_bundle.cc occurrences:",
-              count,
+              count2,
           )
 
-          if count > 1:
+          if count2 != 2:
               raise SystemExit(
-                  "ERROR: Unexpected multiple "
-                  "fmt::join(path, \"/\") expressions"
+                  "ERROR: Expected exactly 2 "
+                  "fmt::join(path, \"/\") expressions, "
+                  f"found {count2}"
               )
 
-          if count == 1:
-              text = text.replace(
-                  needle,
-                  replacement,
-                  1,
+          text = text.replace(
+              needle2,
+              replacement2,
+          )
+
+          file2.write_text(text)
+
+          print(
+              "Patched all",
+              count2,
+              "occurrences in:",
+              file2,
+          )
+
+          # ========================================================
+          # VERIFY
+          # ========================================================
+
+          remaining1 = (
+              file1.read_text().count(needle1)
+          )
+
+          remaining2 = (
+              file2.read_text().count(needle2)
+          )
+
+          print()
+          print(
+              "Remaining overridden_keys joins:",
+              remaining1,
+          )
+
+          print(
+              "Remaining path joins:",
+              remaining2,
+          )
+
+          if remaining1 != 0:
+              raise SystemExit(
+                  "ERROR: overridden_keys join remains"
               )
 
-              path.write_text(text)
-
-              print("Patched:", path)
-          else:
-              print(
-                  "No fmt::join(path, \"/\") found; "
-                  "nothing to patch in this file."
+          if remaining2 != 0:
+              raise SystemExit(
+                  "ERROR: path joins remain"
               )
+
+          print()
+          print(
+              "BundleKey compatibility patch successful."
+          )
           PY
 
           echo
           echo "========================================"
-          echo "VERIFY PATCH"
+          echo "PATCH DIFF"
           echo "========================================"
-
-          echo
-          echo "Remaining BundleKey fmt::join calls:"
-
-          grep -RIn \
-            -E \
-            'fmt::join\(overridden_keys|fmt::join\(path, "/"' \
-            source/blender/nodes \
-            || true
-
-          if grep -RIn \
-            -E \
-            'fmt::join\(overridden_keys|fmt::join\(path, "/"' \
-            source/blender/nodes
-          then
-            echo
-            echo "ERROR: problematic BundleKey fmt::join remains"
-            exit 1
-          fi
-
-          echo
-          echo "===== Source diff ====="
 
           git diff -- \
             source/blender/nodes/geometry/nodes/node_geo_join_bundle.cc \
             source/blender/nodes/intern/geometry_nodes_bundle.cc
 
+          echo
+          echo "===== Verify joins are gone ====="
+
+          if grep -RIn \
+            'fmt::join(overridden_keys' \
+            source/blender/nodes
+          then
+            echo "ERROR: overridden_keys fmt::join still exists"
+            exit 1
+          fi
+
+          if grep -n \
+            'fmt::join(path, "/")' \
+            source/blender/nodes/intern/geometry_nodes_bundle.cc
+          then
+            echo "ERROR: path fmt::join still exists"
+            exit 1
+          fi
+
+          echo
+          echo "Patch verification passed."
+
       # ============================================================
       # 15. CONFIGURE BLENDER
       #
-      # Cycles stays disabled because the untouched branch has the
-      # separate iOS Cycles CPU-kernel compile failure we already
-      # isolated.
+      # Cycles stays OFF.
       #
-      # Python remains ON.
-      # No custom fmt include paths.
+      # No fmt override.
       # No CPATH.
       # No CPLUS_INCLUDE_PATH.
+      # No downloaded fmt.
       # ============================================================
 
       - name: Configure Blender for iOS
         run: |
           set -euxo pipefail
 
-          rm -rf \
-            build_ios
+          rm -rf build_ios
 
           IOS_LIBDIR="$GITHUB_WORKSPACE/lib/ios_arm64"
 
@@ -656,16 +670,11 @@ jobs:
             dirname "$IOS_SDK_ROOT"
           )"
 
-          echo "========================================"
-          echo "CONFIGURE"
-          echo "========================================"
-
-          echo
-          echo "SDK:"
+          echo "===== SDK ====="
           echo "$IOS_SDK_ROOT"
 
           echo
-          echo "LIBDIR:"
+          echo "===== LIBDIR ====="
           echo "$IOS_LIBDIR"
 
           cmake \
@@ -688,7 +697,7 @@ jobs:
         run: |
           set -eux
 
-          echo "===== Important values ====="
+          echo "===== Important options ====="
 
           grep -E \
             'WITH_CYCLES:|WITH_PYTHON:|WITH_PYTHON_NUMPY:|WITH_AUDASPACE:|WITH_METAL_BACKEND:' \
@@ -705,7 +714,7 @@ jobs:
           echo "WITH_CYCLES=$CYCLES"
 
           if [ "$CYCLES" != "OFF" ]; then
-            echo "ERROR: Cycles was not disabled"
+            echo "ERROR: Cycles is not OFF"
             exit 1
           fi
 
@@ -718,31 +727,12 @@ jobs:
           echo "WITH_PYTHON=$PYTHON"
 
           if [ "$PYTHON" != "ON" ]; then
-            echo "ERROR: Python is not enabled"
+            echo "ERROR: Python is not ON"
             exit 1
           fi
 
       # ============================================================
-      # 17. LIST XCODE PROJECT
-      # ============================================================
-
-      - name: List Xcode targets
-        run: |
-          xcodebuild \
-            -project build_ios/Blender.xcodeproj \
-            -list
-
-      # ============================================================
-      # 18. BUILD BLENDER
-      #
-      # Save the COMPLETE Xcode output.
-      #
-      # On failure:
-      #   compiler-errors.txt
-      #   failed-commands.txt
-      #   fmt-errors.txt
-      #
-      # are created automatically.
+      # 17. BUILD BLENDER
       # ============================================================
 
       - name: Build Blender for physical iOS
@@ -753,11 +743,7 @@ jobs:
             sysctl -n hw.ncpu
           )"
 
-          echo "========================================"
-          echo "BUILD"
-          echo "========================================"
-
-          echo "Jobs: $NCPU"
+          echo "Build jobs: $NCPU"
 
           set +e
 
@@ -786,9 +772,9 @@ jobs:
             echo "========================================"
             echo "BUILD FAILED"
             echo "========================================"
-            echo
 
-            echo "===== Compiler / linker errors ====="
+            echo
+            echo "===== Compiler/linker errors ====="
 
             grep -n -C 20 \
               -E \
@@ -802,7 +788,7 @@ jobs:
               || true
 
             echo
-            echo "===== fmt / BundleKey diagnostics ====="
+            echo "===== fmt / BundleKey errors ====="
 
             grep -n -C 10 \
               -E \
@@ -829,9 +815,9 @@ jobs:
               || true
 
             echo
-            echo "===== Last 350 lines ====="
+            echo "===== Last 400 lines ====="
 
-            tail -350 \
+            tail -400 \
               xcodebuild.log \
               || true
 
@@ -847,7 +833,7 @@ jobs:
             xcodebuild.log
 
       # ============================================================
-      # 19. FIND Blender.app
+      # 18. FIND Blender.app
       # ============================================================
 
       - name: Find Blender.app
@@ -862,12 +848,9 @@ jobs:
               -print -quit
           )"
 
-          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+          if [ -z "$APP" ]; then
 
-            echo "ERROR: Blender.app not found"
-
-            echo
-            echo "===== App bundles ====="
+            echo "ERROR: Blender.app was not found"
 
             find \
               build_ios \
@@ -882,7 +865,6 @@ jobs:
           echo "APP=$APP" \
             >> "$GITHUB_ENV"
 
-          echo
           echo "===== Blender.app ====="
 
           echo "$APP"
@@ -891,7 +873,7 @@ jobs:
             "$APP"
 
       # ============================================================
-      # 20. VERIFY APP BINARY
+      # 19. VERIFY EXECUTABLE
       # ============================================================
 
       - name: Verify Blender executable
@@ -937,9 +919,7 @@ jobs:
             >> "$GITHUB_ENV"
 
           echo
-          echo "===== Executable ====="
-
-          echo "$EXECUTABLE"
+          echo "===== Binary ====="
 
           file \
             "$EXECUTABLE"
@@ -952,40 +932,14 @@ jobs:
             || true
 
       # ============================================================
-      # 21. SHOW APP CONTENTS
-      # ============================================================
-
-      - name: Inspect Blender.app
-        run: |
-          set -eux
-
-          echo "===== Top-level files ====="
-
-          find \
-            "$APP" \
-            -maxdepth 2 \
-            -type f \
-            -print \
-            | head -100
-
-          echo
-          echo "===== App size ====="
-
-          du -sh \
-            "$APP"
-
-      # ============================================================
-      # 22. PACKAGE UNSIGNED IPA
-      #
-      # LiveContainer / sideload tools can handle signing later.
+      # 20. PACKAGE IPA
       # ============================================================
 
       - name: Package unsigned IPA
         run: |
           set -eux
 
-          rm -rf \
-            package
+          rm -rf package
 
           mkdir -p \
             package/Payload
@@ -999,56 +953,50 @@ jobs:
           zip \
             -qry \
             -y \
-            ../Blender-5.2-iOS-Cycles-OFF.ipa \
+            ../Blender-5.2-iPad-Cycles-OFF.ipa \
             Payload
 
           cd ..
 
           test -f \
-            Blender-5.2-iOS-Cycles-OFF.ipa
+            Blender-5.2-iPad-Cycles-OFF.ipa
 
           echo
-          echo "========================================"
-          echo "IPA CREATED"
-          echo "========================================"
+          echo "===== IPA ====="
 
           ls -lh \
-            Blender-5.2-iOS-Cycles-OFF.ipa
+            Blender-5.2-iPad-Cycles-OFF.ipa
 
           echo
           echo "===== IPA contents ====="
 
           unzip -l \
-            Blender-5.2-iOS-Cycles-OFF.ipa \
+            Blender-5.2-iPad-Cycles-OFF.ipa \
             | head -80
 
       # ============================================================
-      # 23. WRITE BUILD REVISION INFORMATION
+      # 21. WRITE BUILD INFORMATION
       # ============================================================
 
       - name: Write build revision
         if: always()
         run: |
           {
-            echo "Source repository:"
-            echo "https://github.com/salmazov/blender-ios"
-            echo
-
-            echo "Source branch:"
-            echo "ios-new"
+            echo "Source:"
+            echo "salmazov/blender-ios"
             echo
 
             echo "Source commit:"
             git rev-parse HEAD 2>/dev/null || true
             echo
 
-            echo "iOS library commit:"
+            echo "iOS libraries:"
             git -C lib/ios_arm64 \
               rev-parse HEAD \
               2>/dev/null || true
             echo
 
-            echo "macOS library commit:"
+            echo "macOS libraries:"
             git -C lib/macos_arm64 \
               rev-parse HEAD \
               2>/dev/null || true
@@ -1059,28 +1007,29 @@ jobs:
             echo
 
             echo "Compatibility patches:"
-            echo "BundleKey fmt::join conversion to std::string"
+            echo "1 x overridden_keys BundleKey fmt::join"
+            echo "2 x path BundleKey fmt::join"
           } > build-revision.txt
 
           cat \
             build-revision.txt
 
       # ============================================================
-      # 24. UPLOAD IPA
+      # 22. UPLOAD IPA
       # ============================================================
 
       - name: Upload Blender IPA
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: Blender-5.2-iOS-Cycles-OFF
+          name: Blender-5.2-iPad-Cycles-OFF
           path: |
-            Blender-5.2-iOS-Cycles-OFF.ipa
+            Blender-5.2-iPad-Cycles-OFF.ipa
             build-revision.txt
           retention-days: 30
 
       # ============================================================
-      # 25. ALWAYS UPLOAD LOGS
+      # 23. ALWAYS UPLOAD LOGS
       # ============================================================
 
       - name: Upload build logs
