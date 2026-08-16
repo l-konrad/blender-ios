@@ -9,7 +9,7 @@ concurrency:
 
 jobs:
   build:
-    name: Blender iOS - Fast Incremental
+    name: Blender iOS - Touch + Keyboard Fix
     runs-on: macos-15
     timeout-minutes: 180
 
@@ -23,13 +23,17 @@ jobs:
 
       IOS_DEPLOYMENT_TARGET: "26.2"
 
-      # Keep unchanged so the successful partial build stays reusable.
+      # IMPORTANT:
+      # Keep this exactly at fast-v3.
+      #
+      # The previous successful Blender compilation can then be
+      # restored instead of recompiling everything.
       BUILD_CACHE_VERSION: fast-v3
 
     steps:
 
       # ============================================================
-      # 1. CHECKOUT
+      # 1. CHECKOUT EXACT SOURCE
       # ============================================================
 
       - name: Checkout Blender iOS
@@ -55,6 +59,7 @@ jobs:
           echo "========================================"
           echo "SOURCE"
           echo "========================================"
+          echo
           echo "Expected: $BLENDER_SHA"
           echo "Actual:   $ACTUAL"
 
@@ -64,6 +69,8 @@ jobs:
 
       # ============================================================
       # 3. NORMALIZE SOURCE TIMESTAMPS
+      #
+      # This allows Xcode to reuse restored object files.
       # ============================================================
 
       - name: Normalize source timestamps
@@ -134,9 +141,18 @@ jobs:
           XCODE="/Applications/Xcode_26.3.app"
 
           if [ ! -d "$XCODE" ]; then
+
             echo "ERROR: Xcode 26.3 unavailable."
-            ls -d /Applications/Xcode*.app || true
+
+            echo
+            echo "Installed Xcode versions:"
+
+            ls -d \
+              /Applications/Xcode*.app \
+              || true
+
             exit 1
+
           fi
 
           sudo xcode-select \
@@ -145,7 +161,16 @@ jobs:
           echo "DEVELOPER_DIR=$XCODE/Contents/Developer" \
             >> "$GITHUB_ENV"
 
+          echo
+          echo "========================================"
+          echo "XCODE"
+          echo "========================================"
+
           xcodebuild -version
+
+          echo
+          echo "Developer directory:"
+
           xcode-select -p
 
       # ============================================================
@@ -162,32 +187,39 @@ jobs:
               --show-sdk-version
           )"
 
-          PATH_SDK="$(
+          SDK_PATH="$(
             xcrun \
               --sdk iphoneos \
               --show-sdk-path
           )"
 
-          echo "SDK version: $VERSION"
-          echo "SDK path:    $PATH_SDK"
+          echo "========================================"
+          echo "IPHONEOS SDK"
+          echo "========================================"
+
+          echo "Version: $VERSION"
+          echo "Path:    $SDK_PATH"
 
           case "$VERSION" in
+
             26.*)
               ;;
+
             *)
               echo "ERROR: Expected iOS 26.x SDK."
               exit 1
               ;;
+
           esac
 
           echo "IOS_SDK_VERSION=$VERSION" \
             >> "$GITHUB_ENV"
 
-          echo "IOS_SDK_ROOT=$PATH_SDK" \
+          echo "IOS_SDK_ROOT=$SDK_PATH" \
             >> "$GITHUB_ENV"
 
       # ============================================================
-      # 6. UIKIT API PROBE
+      # 6. TEST MODERN UIKIT API
       # ============================================================
 
       - name: Test modern UIWindowScene API
@@ -218,6 +250,9 @@ jobs:
             -miphoneos-version-min="$IOS_DEPLOYMENT_TARGET" \
             /tmp/uikit_probe.mm
 
+          echo
+          echo "Modern UIWindowScene API probe passed."
+
       # ============================================================
       # 7. DISK SPACE
       # ============================================================
@@ -226,14 +261,21 @@ jobs:
         run: |
           set -euxo pipefail
 
-          df -h "$GITHUB_WORKSPACE"
+          df -h \
+            "$GITHUB_WORKSPACE"
 
           FREE_KB="$(
             df -Pk "$GITHUB_WORKSPACE" \
               | awk 'NR == 2 {print $4}'
           )"
 
+          echo
+          echo "Available KB: $FREE_KB"
+
           if [ "$FREE_KB" -lt 30000000 ]; then
+
+            echo
+            echo "Low disk space. Cleaning runner..."
 
             sudo rm -rf \
               /usr/local/lib/android \
@@ -259,12 +301,18 @@ jobs:
               2>/dev/null \
               || true
 
+          else
+
+            echo
+            echo "Enough disk space."
+
           fi
 
-          df -h "$GITHUB_WORKSPACE"
+          df -h \
+            "$GITHUB_WORKSPACE"
 
       # ============================================================
-      # 8. TOOLS
+      # 8. REQUIRED TOOLS
       # ============================================================
 
       - name: Ensure build tools
@@ -282,16 +330,25 @@ jobs:
           fi
 
           if [ -n "$NEED" ]; then
+
             brew install $NEED
+
+          else
+
+            echo "CMake and Git LFS already available."
+
           fi
 
           git lfs install
 
+          echo
           cmake --version
+
+          echo
           git lfs version
 
       # ============================================================
-      # 9. BLENDER LFS REMOTE
+      # 9. OFFICIAL BLENDER LFS REMOTE
       # ============================================================
 
       - name: Configure Blender LFS remote
@@ -312,6 +369,9 @@ jobs:
             lfs.remote.searchall \
             true
 
+          echo
+          echo "===== Git remotes ====="
+
           git remote -v
 
       # ============================================================
@@ -329,25 +389,12 @@ jobs:
           SHA=""
           URL=""
 
-          # --------------------------------------------------------
-          # Current-style Blender source:
-          #
-          #   assets/brushes
-          #   assets/nodes
-          # --------------------------------------------------------
-
           if [ -d assets ]; then
 
             MODE="root"
             SOURCE="assets"
 
           else
-
-            # ------------------------------------------------------
-            # Older layout:
-            #
-            # release/datafiles/assets may be a gitlink.
-            # ------------------------------------------------------
 
             TREE_LINE="$(
               git ls-tree \
@@ -388,8 +435,11 @@ jobs:
               )"
 
               if [ -z "$SUBMODULE_NAME" ]; then
+
                 echo "ERROR: Cannot locate assets submodule entry."
+
                 exit 1
+
               fi
 
               URL="$(
@@ -400,25 +450,36 @@ jobs:
               )"
 
               if [ -z "$URL" ]; then
+
                 echo "ERROR: Cannot determine assets repository URL."
+
                 exit 1
+
               fi
 
             else
 
-              echo "ERROR: Could not determine Blender bundled asset layout."
+              echo "ERROR: Could not determine Blender asset layout."
 
               echo
               echo "Root:"
-              ls -la
+
+              ls -la \
+                || true
 
               echo
               echo "release/datafiles:"
-              ls -la release/datafiles || true
+
+              ls -la \
+                release/datafiles \
+                || true
 
               echo
               echo ".gitmodules:"
-              cat .gitmodules || true
+
+              cat \
+                .gitmodules \
+                || true
 
               exit 1
 
@@ -445,6 +506,7 @@ jobs:
           echo "========================================"
           echo "BUNDLED ASSET LAYOUT"
           echo "========================================"
+
           echo "Mode:   $MODE"
           echo "Source: $SOURCE"
           echo "SHA:    $SHA"
@@ -466,7 +528,7 @@ jobs:
           key: blender-source-assets-${{ env.BLENDER_SHA }}-materialized-v5
 
       # ============================================================
-      # 12. RESTORE LEGACY ASSETS
+      # 12. RESTORE LEGACY ASSETS IF NEEDED
       # ============================================================
 
       - name: Restore legacy Blender assets
@@ -492,10 +554,12 @@ jobs:
           set -euxo pipefail
 
           ROOT="release/datafiles/assets"
+
           SHA="${{ steps.asset-layout.outputs.sha }}"
           URL="${{ steps.asset-layout.outputs.url }}"
 
-          rm -rf "$ROOT"
+          rm -rf \
+            "$ROOT"
 
           git clone \
             --filter=blob:none \
@@ -519,7 +583,9 @@ jobs:
               rev-parse HEAD
           )"
 
-          test "$ACTUAL" = "$SHA"
+          test \
+            "$ACTUAL" \
+            = "$SHA"
 
           git -C "$ROOT" \
             lfs install \
@@ -529,7 +595,8 @@ jobs:
             lfs pull \
             2>&1 | tee blender-assets-lfs.log
 
-          du -sh "$ROOT"
+          du -sh \
+            "$ROOT"
 
       # ============================================================
       # 14. VERIFY LEGACY ASSETS
@@ -580,9 +647,10 @@ jobs:
                   pass
 
           if bad:
+
               print(
-                  "ERROR: legacy blender-assets still "
-                  "contains LFS pointers:"
+                  "ERROR: legacy blender-assets "
+                  "still contains LFS pointers:"
               )
 
               for path in bad:
@@ -596,7 +664,7 @@ jobs:
           PY
 
       # ============================================================
-      # 15. MATERIALIZE MAIN-REPOSITORY LFS FILES
+      # 15. MATERIALIZE MAIN REPOSITORY LFS RESOURCES
       # ============================================================
 
       - name: Materialize packaged source resources
@@ -611,18 +679,24 @@ jobs:
             FILE="$1"
 
             if [ ! -f "$FILE" ]; then
+
               echo "ERROR: Missing source file:"
               echo "  $FILE"
+
               return 1
+
             fi
 
             if ! head -c 200 "$FILE" \
               | grep -q "$LFS_MAGIC"
             then
+
               return 0
+
             fi
 
             echo
+            echo "----------------------------------------"
             echo "Materializing:"
             echo "  $FILE"
 
@@ -633,9 +707,16 @@ jobs:
             )"
 
             if [ -z "$OID" ]; then
-              echo "ERROR: Invalid LFS pointer: $FILE"
+
+              echo "ERROR: Invalid LFS pointer:"
+              echo "  $FILE"
+
               return 1
+
             fi
+
+            echo "OID:"
+            echo "  $OID"
 
             GIT_DIR="$(
               git rev-parse \
@@ -666,11 +747,15 @@ jobs:
 
             if [ ! -f "$OBJECT" ]; then
 
-              echo "ERROR: LFS object unavailable:"
-              echo "  file: $FILE"
-              echo "  oid:  $OID"
+              echo
+              echo "ERROR: LFS object unavailable."
+              echo "File:"
+              echo "  $FILE"
+              echo "OID:"
+              echo "  $OID"
 
               return 1
+
             fi
 
             TEMP="${FILE}.materialized"
@@ -688,22 +773,35 @@ jobs:
 
             if [ "$ACTUAL" != "$OID" ]; then
 
-              echo "ERROR: LFS SHA mismatch."
+              echo
+              echo "ERROR: LFS SHA-256 mismatch."
               echo "Expected: $OID"
               echo "Actual:   $ACTUAL"
 
-              rm -f "$TEMP"
+              rm -f \
+                "$TEMP"
 
               return 1
+
             fi
 
             mv \
               "$TEMP" \
               "$FILE"
+
+            if head -c 200 "$FILE" \
+              | grep -q "$LFS_MAGIC"
+            then
+
+              echo "ERROR: Materialized file still looks like a pointer."
+
+              return 1
+
+            fi
           }
 
           # --------------------------------------------------------
-          # Prefetch main Blender resources.
+          # Prefetch common resources.
           # --------------------------------------------------------
 
           git lfs fetch \
@@ -733,9 +831,6 @@ jobs:
 
           # --------------------------------------------------------
           # release/datafiles
-          #
-          # Exclude nested assets path because that can be its own
-          # repository in the legacy layout.
           # --------------------------------------------------------
 
           while IFS= read -r -d '' FILE
@@ -745,7 +840,8 @@ jobs:
               | grep -q "$LFS_MAGIC"
             then
 
-              materialize_pointer "$FILE"
+              materialize_pointer \
+                "$FILE"
 
             fi
 
@@ -770,7 +866,8 @@ jobs:
               | grep -q "$LFS_MAGIC"
             then
 
-              materialize_pointer "$FILE"
+              materialize_pointer \
+                "$FILE"
 
             fi
 
@@ -794,7 +891,8 @@ jobs:
                 | grep -q "$LFS_MAGIC"
               then
 
-                materialize_pointer "$FILE"
+                materialize_pointer \
+                  "$FILE"
 
               fi
 
@@ -808,12 +906,13 @@ jobs:
           fi
 
           # --------------------------------------------------------
-          # startup.blend hard check.
+          # startup.blend is required.
           # --------------------------------------------------------
 
           STARTUP="release/datafiles/startup.blend"
 
-          materialize_pointer "$STARTUP"
+          materialize_pointer \
+            "$STARTUP"
 
           SIZE="$(
             stat \
@@ -821,9 +920,12 @@ jobs:
               "$STARTUP"
           )"
 
+          echo
           echo "startup.blend size: $SIZE"
 
-          test "$SIZE" -gt 1024
+          test \
+            "$SIZE" \
+            -gt 1024
 
       # ============================================================
       # 16. APPICON WORKAROUND
@@ -841,22 +943,34 @@ jobs:
 
           CONTENTS="$ICON_DIR/Contents.json"
 
-          test -d "$ICON_DIR"
-          test -f "$CONTENTS"
+          test -d \
+            "$ICON_DIR"
+
+          test -f \
+            "$CONTENTS"
 
           NEED_ICON=0
 
           if [ ! -f "$ICON" ]; then
+
             NEED_ICON=1
+
           elif [ ! -s "$ICON" ]; then
+
             NEED_ICON=1
+
           elif head -c 200 "$ICON" \
             | grep -q "$LFS_MAGIC"
           then
+
             NEED_ICON=1
+
           fi
 
           if [ "$NEED_ICON" -eq 1 ]; then
+
+            echo
+            echo "Generating fallback 1024x1024 RGB AppIcon..."
 
             ICON_PATH="$ICON" python3 <<'PY'
           import binascii
@@ -945,7 +1059,11 @@ jobs:
 
           fi
 
-          file "$ICON"
+          echo
+          echo "===== AppIcon ====="
+
+          file \
+            "$ICON"
 
           sips \
             -g pixelWidth \
@@ -968,20 +1086,26 @@ jobs:
               | awk '/pixelHeight:/ {print $2}'
           )"
 
-          test "$WIDTH" = "1024"
-          test "$HEIGHT" = "1024"
+          test \
+            "$WIDTH" \
+            = "1024"
+
+          test \
+            "$HEIGHT" \
+            = "1024"
 
           if head -c 200 "$ICON" \
             | grep -q "$LFS_MAGIC"
           then
 
             echo "ERROR: AppIcon remains an LFS pointer."
+
             exit 1
 
           fi
 
       # ============================================================
-      # 17. VERIFY ALL PACKAGED SOURCE RESOURCES
+      # 17. VERIFY ALL SOURCE RESOURCES
       # ============================================================
 
       - name: Verify source resources
@@ -1039,7 +1163,9 @@ jobs:
                   if resolved in seen:
                       continue
 
-                  seen.add(resolved)
+                  seen.add(
+                      resolved
+                  )
 
                   try:
                       if path.read_bytes()[:200].startswith(magic):
@@ -1051,11 +1177,14 @@ jobs:
 
               print(
                   "ERROR: source resources still "
-                  "contain LFS pointers:"
+                  "contain Git LFS pointers:"
               )
 
               for path in bad:
-                  print(" ", path)
+                  print(
+                      " ",
+                      path,
+                  )
 
               raise SystemExit(1)
 
@@ -1065,7 +1194,7 @@ jobs:
           PY
 
       # ============================================================
-      # 18. VERIFY PREVIOUSLY MISSING BUNDLED ASSETS
+      # 18. VERIFY BUNDLED BRUSH/NODE ASSETS
       # ============================================================
 
       - name: Verify bundled brushes and nodes
@@ -1097,9 +1226,11 @@ jobs:
 
             FILE="$ROOT/$REL"
 
-            echo "Checking: $FILE"
+            echo "Checking:"
+            echo "  $FILE"
 
-            test -f "$FILE"
+            test -f \
+              "$FILE"
 
             if head -c 200 "$FILE" \
               | grep -q \
@@ -1107,7 +1238,7 @@ jobs:
             then
 
               echo "ERROR: Asset remains an LFS pointer:"
-              echo "$FILE"
+              echo "  $FILE"
 
               exit 1
 
@@ -1115,7 +1246,8 @@ jobs:
 
           done
 
-          echo "All previously failing bundled assets are real files."
+          echo
+          echo "All previously failing bundled assets are valid."
 
       # ============================================================
       # 19. SAVE SOURCE RESOURCE CACHE
@@ -1134,7 +1266,7 @@ jobs:
           key: blender-source-assets-${{ env.BLENDER_SHA }}-materialized-v5
 
       # ============================================================
-      # 20. SAVE LEGACY ASSET CACHE
+      # 20. SAVE LEGACY ASSETS CACHE
       # ============================================================
 
       - name: Save legacy Blender assets
@@ -1148,7 +1280,7 @@ jobs:
           key: blender-assets-${{ steps.asset-layout.outputs.sha }}-v2
 
       # ============================================================
-      # 21. DETERMINE PREBUILT LIB REVISIONS
+      # 21. DETERMINE PREBUILT LIBRARY REVISIONS
       # ============================================================
 
       - name: Determine library revisions
@@ -1193,7 +1325,7 @@ jobs:
             >> "$GITHUB_OUTPUT"
 
       # ============================================================
-      # 22. VERIFY LIB PINS
+      # 22. VERIFY LIBRARY PINS
       # ============================================================
 
       - name: Verify library revisions
@@ -1209,7 +1341,7 @@ jobs:
             = "$EXPECTED_MAC_LIB_SHA"
 
       # ============================================================
-      # 23. RESTORE IOS LIBS
+      # 23. RESTORE IOS LIBRARIES
       # ============================================================
 
       - name: Restore iOS libraries
@@ -1220,7 +1352,7 @@ jobs:
           key: blender-ioslib-${{ steps.libs.outputs.ios_sha }}-v3
 
       # ============================================================
-      # 24. FETCH IOS LIBS
+      # 24. FETCH IOS LIBRARIES
       # ============================================================
 
       - name: Fetch iOS libraries
@@ -1267,8 +1399,11 @@ jobs:
             lfs pull \
             2>&1 | tee ios-lfs.log
 
+          du -sh \
+            lib/ios_arm64
+
       # ============================================================
-      # 25. VERIFY IOS LIBS
+      # 25. VERIFY IOS LIBRARIES
       # ============================================================
 
       - name: Verify iOS libraries
@@ -1280,13 +1415,15 @@ jobs:
               rev-parse HEAD
           )"
 
-          test "$ACTUAL" = "$EXPECTED_IOS_LIB_SHA"
+          test \
+            "$ACTUAL" \
+            = "$EXPECTED_IOS_LIB_SHA"
 
           test -f \
             lib/ios_arm64/python/lib/libpython3.11.a
 
       # ============================================================
-      # 26. SAVE IOS LIBS
+      # 26. SAVE IOS LIBRARIES
       # ============================================================
 
       - name: Save iOS library cache
@@ -1298,7 +1435,7 @@ jobs:
           key: blender-ioslib-${{ steps.libs.outputs.ios_sha }}-v3
 
       # ============================================================
-      # 27. RESTORE MAC LIBS
+      # 27. RESTORE MACOS LIBRARIES
       # ============================================================
 
       - name: Restore macOS libraries
@@ -1309,7 +1446,7 @@ jobs:
           key: blender-maclib-${{ steps.libs.outputs.mac_sha }}-v3
 
       # ============================================================
-      # 28. FETCH MAC LIBS
+      # 28. FETCH MACOS LIBRARIES
       # ============================================================
 
       - name: Fetch macOS libraries
@@ -1356,8 +1493,11 @@ jobs:
             lfs pull \
             2>&1 | tee macos-lfs.log
 
+          du -sh \
+            lib/macos_arm64
+
       # ============================================================
-      # 29. VERIFY MAC LIBS
+      # 29. VERIFY MACOS LIBRARIES
       # ============================================================
 
       - name: Verify macOS libraries
@@ -1369,7 +1509,9 @@ jobs:
               rev-parse HEAD
           )"
 
-          test "$ACTUAL" = "$EXPECTED_MAC_LIB_SHA"
+          test \
+            "$ACTUAL" \
+            = "$EXPECTED_MAC_LIB_SHA"
 
           HOST_PYTHON="$(
             find \
@@ -1381,12 +1523,15 @@ jobs:
               -quit
           )"
 
-          test -n "$HOST_PYTHON"
+          test -n \
+            "$HOST_PYTHON"
 
-          echo "Host Python: $HOST_PYTHON"
+          echo
+          echo "Host Python:"
+          echo "$HOST_PYTHON"
 
       # ============================================================
-      # 30. SAVE MAC LIBS
+      # 30. SAVE MACOS LIBRARIES
       # ============================================================
 
       - name: Save macOS library cache
@@ -1398,7 +1543,7 @@ jobs:
           key: blender-maclib-${{ steps.libs.outputs.mac_sha }}-v3
 
       # ============================================================
-      # 31. FMT COMPATIBILITY PATCHES
+      # 31. APPLY FMT COMPATIBILITY FIXES
       # ============================================================
 
       - name: Apply fmt compatibility fixes
@@ -1442,7 +1587,9 @@ jobs:
                 return result;
               }()'''
 
-          count = text.count(needle)
+          count = text.count(
+              needle
+          )
 
           print(
               "BundleKey joins:",
@@ -1450,6 +1597,7 @@ jobs:
           )
 
           if count != 1:
+
               raise SystemExit(
                   "ERROR: expected exactly 1 "
                   "BundleKey fmt::join; "
@@ -1517,7 +1665,9 @@ jobs:
                 return result;
               }()'''
 
-          count = text.count(needle)
+          count = text.count(
+              needle
+          )
 
           print(
               "Path joins:",
@@ -1525,6 +1675,7 @@ jobs:
           )
 
           if count != 2:
+
               raise SystemExit(
                   "ERROR: expected exactly 2 "
                   "path fmt::join calls; "
@@ -1552,7 +1703,9 @@ jobs:
 
           call = "fmt::println("
 
-          total = text.count(call)
+          total = text.count(
+              call
+          )
 
           print(
               "mesh_bevel println calls:",
@@ -1560,27 +1713,29 @@ jobs:
           )
 
           if total < 19:
+
               raise SystemExit(
                   "ERROR: expected at least 19 "
                   "println calls; "
                   f"found {total}"
               )
 
-          # Empty println => newline.
           text = text.replace(
               "fmt::println();",
               'fmt::print("\\n");',
           )
 
-          remaining = text.count(call)
+          remaining = text.count(
+              call
+          )
 
           if remaining:
 
               macro = r'''
 
           /*
-           * Compatibility for the older fmt implementation
-           * exposed by the iOS dependency set.
+           * Compatibility for the older fmt implementation exposed
+           * by the iOS dependency set.
            */
           #ifndef BLENDER_FMT_PRINTLN_COMPAT
           #  define BLENDER_FMT_PRINTLN_COMPAT(...) \
@@ -1600,8 +1755,9 @@ jobs:
               )
 
               if not includes:
+
                   raise SystemExit(
-                      "ERROR: Could not locate mesh_bevel include block."
+                      "ERROR: could not locate mesh_bevel include block."
                   )
 
               insert_at = includes[-1].end()
@@ -1617,7 +1773,9 @@ jobs:
                   "BLENDER_FMT_PRINTLN_COMPAT(",
               )
 
-          file3.write_text(text)
+          file3.write_text(
+              text
+          )
 
 
           # ========================================================
@@ -1625,20 +1783,24 @@ jobs:
           # ========================================================
 
           if 'fmt::join(overridden_keys, ", ")' in file1.read_text():
+
               raise SystemExit(
-                  "ERROR: BundleKey fmt join remains"
+                  "ERROR: BundleKey fmt join remains."
               )
 
           if 'fmt::join(path, "/")' in file2.read_text():
+
               raise SystemExit(
-                  "ERROR: path fmt join remains"
+                  "ERROR: path fmt join remains."
               )
 
           if "fmt::println(" in file3.read_text():
+
               raise SystemExit(
-                  "ERROR: real fmt::println call remains"
+                  "ERROR: real fmt::println call remains."
               )
 
+          print()
           print(
               "All fmt compatibility patches verified."
           )
@@ -1650,23 +1812,25 @@ jobs:
             source/blender/geometry/intern/mesh_bevel.cc \
             > compatibility.patch
 
+          echo
+          echo "===== Verify no actual println calls ====="
+
           if grep -nF \
             'fmt::println(' \
             source/blender/geometry/intern/mesh_bevel.cc
           then
+
             echo "ERROR: actual fmt::println call remains."
+
             exit 1
+
           fi
 
       # ============================================================
       # 32. FIX IOS TOUCH COORDINATE OFFSET
       #
-      # UITouch / gesture locations are already in UIView logical
-      # coordinates.
-      #
-      # Blender's current iOS window uses logical coordinates too.
-      #
-      # Remove the extra conversion to Retina/device pixels.
+      # This is the version that produced correct touch positioning
+      # on the physical iPad.
       # ============================================================
 
       - name: Fix iOS touch coordinate offset
@@ -1687,19 +1851,16 @@ jobs:
 
 
           # ========================================================
-          # A. GESTURE LOCATION
-          #
-          # Existing recognizers take a UIView point then pass it
-          # through scalePointToWindow().
-          #
-          # Keep the original UIKit point instead.
+          # A. NORMAL GESTURE POINTS
           # ========================================================
 
           old = (
               "return window->scalePointToWindow(touch_point);"
           )
 
-          count = text.count(old)
+          count = text.count(
+              old
+          )
 
           print(
               "Scaled gesture-point returns:",
@@ -1707,6 +1868,7 @@ jobs:
           )
 
           if count < 1:
+
               raise SystemExit(
                   "ERROR: Could not find expected "
                   "scalePointToWindow(touch_point) calls."
@@ -1720,15 +1882,15 @@ jobs:
 
           # ========================================================
           # B. PAN TRANSLATION
-          #
-          # translationInView is also in local view coordinates.
           # ========================================================
 
           old = (
               "return window->scalePointToWindow(translation);"
           )
 
-          count = text.count(old)
+          count = text.count(
+              old
+          )
 
           print(
               "Scaled gesture translations:",
@@ -1736,6 +1898,7 @@ jobs:
           )
 
           if count >= 1:
+
               text = text.replace(
                   old,
                   "return translation;",
@@ -1744,9 +1907,6 @@ jobs:
 
           # ========================================================
           # C. PINCH POINTS
-          #
-          # Keep both finger locations in the same logical
-          # coordinate space.
           # ========================================================
 
           for variable in (
@@ -1762,7 +1922,9 @@ jobs:
               )
 
               matches = list(
-                  pattern.finditer(text)
+                  pattern.finditer(
+                      text
+                  )
               )
 
               print(
@@ -1771,10 +1933,11 @@ jobs:
               )
 
               if matches:
+
                   text = pattern.sub(
                       (
-                          "    /* UIKit touch location is already "
-                          "in the logical view coordinate space. */"
+                          "    /* UIKit location is already "
+                          "in logical view coordinates. */"
                       ),
                       text,
                   )
@@ -1782,16 +1945,6 @@ jobs:
 
           # ========================================================
           # D. RAW UITOUCH LOCATION
-          #
-          # Replace:
-          #
-          # CGPoint loc = [touch locationInView:...];
-          # CGFloat scale = [... contentScaleFactor];
-          # loc.x *= scale;
-          # loc.y *= scale;
-          # return loc;
-          #
-          # with the direct UIKit coordinate.
           # ========================================================
 
           touch_pattern = re.compile(
@@ -1812,7 +1965,9 @@ jobs:
           )
 
           touch_matches = list(
-              touch_pattern.finditer(text)
+              touch_pattern.finditer(
+                  text
+              )
           )
 
           print(
@@ -1821,11 +1976,11 @@ jobs:
           )
 
           if len(touch_matches) != 1:
+
               raise SystemExit(
-                  "ERROR: Expected exactly one "
-                  "scaledLocationOfTouch helper with "
-                  "contentScaleFactor; found "
-                  f"{len(touch_matches)}"
+                  "ERROR: expected exactly one "
+                  "scaledLocationOfTouch helper; "
+                  f"found {len(touch_matches)}"
               )
 
           text = touch_pattern.sub(
@@ -1862,7 +2017,9 @@ jobs:
           )
 
           gesture_matches = list(
-              gesture_pattern.finditer(text)
+              gesture_pattern.finditer(
+                  text
+              )
           )
 
           print(
@@ -1871,11 +2028,11 @@ jobs:
           )
 
           if len(gesture_matches) != 1:
+
               raise SystemExit(
-                  "ERROR: Expected exactly one "
-                  "scaledLocationOfGesture helper with "
-                  "contentScaleFactor; found "
-                  f"{len(gesture_matches)}"
+                  "ERROR: expected exactly one "
+                  "scaledLocationOfGesture helper; "
+                  f"found {len(gesture_matches)}"
               )
 
           text = gesture_pattern.sub(
@@ -1891,22 +2048,20 @@ jobs:
 
 
           # ========================================================
-          # VERIFY PATCH ACTUALLY CHANGED SOURCE
+          # VERIFY PATCH
           # ========================================================
 
           if text == original:
+
               raise SystemExit(
-                  "ERROR: Touch patch made no changes."
+                  "ERROR: touch patch made no changes."
               )
 
-          path.write_text(text)
+          path.write_text(
+              text
+          )
 
           patched = path.read_text()
-
-
-          # ========================================================
-          # VERIFY THE TOUCH-SPECIFIC DOUBLE-SCALING IS GONE
-          # ========================================================
 
           forbidden = [
               (
@@ -1930,76 +2085,11 @@ jobs:
           for item in forbidden:
 
               if item in patched:
+
                   raise SystemExit(
-                      "ERROR: touch coordinate scaling remains: "
+                      "ERROR: touch scaling remains: "
                       + item
                   )
-
-
-          # ========================================================
-          # CHECK RAW TOUCH HELPERS
-          # ========================================================
-
-          helper_start = patched.find(
-              "- (CGPoint)scaledLocationOfTouch:"
-          )
-
-          if helper_start < 0:
-              raise SystemExit(
-                  "ERROR: scaledLocationOfTouch helper vanished."
-              )
-
-          helper_end = patched.find(
-              "- (void)",
-              helper_start,
-          )
-
-          if helper_end < 0:
-              helper_end = min(
-                  len(patched),
-                  helper_start + 3000,
-              )
-
-          touch_helper = patched[
-              helper_start:helper_end
-          ]
-
-          if "contentScaleFactor" in touch_helper:
-              raise SystemExit(
-                  "ERROR: contentScaleFactor remains "
-                  "inside scaledLocationOfTouch."
-              )
-
-
-          gesture_start = patched.find(
-              "- (CGPoint)scaledLocationOfGesture:"
-          )
-
-          if gesture_start < 0:
-              raise SystemExit(
-                  "ERROR: scaledLocationOfGesture helper vanished."
-              )
-
-          gesture_end = patched.find(
-              "- (void)",
-              gesture_start,
-          )
-
-          if gesture_end < 0:
-              gesture_end = min(
-                  len(patched),
-                  gesture_start + 3000,
-              )
-
-          gesture_helper = patched[
-              gesture_start:gesture_end
-          ]
-
-          if "contentScaleFactor" in gesture_helper:
-              raise SystemExit(
-                  "ERROR: contentScaleFactor remains "
-                  "inside scaledLocationOfGesture."
-              )
 
           print()
           print(
@@ -2020,7 +2110,336 @@ jobs:
             > touch-coordinates.patch
 
       # ============================================================
-      # 33. VERIFY MODERN UIKIT SOURCE
+      # 33. FIX popupOnscreenKeyboard: CRASH
+      #
+      # Crash:
+      #
+      # -[GHOSTUIWindow popupOnscreenKeyboard:]:
+      # unrecognized selector sent to instance
+      #
+      # Add the missing selector through an Objective-C category.
+      #
+      # If an existing responder is capable of accepting text input,
+      # try to make it first responder.
+      #
+      # Otherwise the method safely becomes a no-op instead of
+      # terminating Blender.
+      # ============================================================
+
+      - name: Fix iOS onscreen keyboard selector crash
+        run: |
+          set -euxo pipefail
+
+          echo "========================================"
+          echo "EXISTING KEYBOARD SELECTOR REFERENCES"
+          echo "========================================"
+
+          grep -RIn \
+            'popupOnscreenKeyboard' \
+            intern/ghost \
+            source/blender \
+            release/ios \
+            2>/dev/null \
+            || true
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          roots = [
+              Path(
+                  "intern/ghost/intern"
+              ),
+              Path(
+                  "release/ios"
+              ),
+          ]
+
+          candidates = []
+
+          for root in roots:
+
+              if not root.exists():
+                  continue
+
+              for path in root.rglob("*"):
+
+                  if path.suffix not in {
+                      ".m",
+                      ".mm",
+                  }:
+                      continue
+
+                  try:
+                      text = path.read_text()
+                  except (UnicodeDecodeError, OSError):
+                      continue
+
+                  if "@implementation GHOSTUIWindow" in text:
+
+                      candidates.append(
+                          path
+                      )
+
+          print()
+          print(
+              "GHOSTUIWindow implementation candidates:"
+          )
+
+          for path in candidates:
+              print(
+                  " ",
+                  path,
+              )
+
+          if not candidates:
+
+              raise SystemExit(
+                  "ERROR: could not locate "
+                  "@implementation GHOSTUIWindow."
+              )
+
+          target = candidates[0]
+
+          text = target.read_text()
+
+          print()
+          print(
+              "Keyboard patch target:",
+              target,
+          )
+
+
+          # ========================================================
+          # CHECK THE PRIMARY GHOSTUIWindow IMPLEMENTATION
+          # ========================================================
+
+          implementation_start = text.find(
+              "@implementation GHOSTUIWindow"
+          )
+
+          if implementation_start < 0:
+
+              raise SystemExit(
+                  "ERROR: GHOSTUIWindow implementation vanished."
+              )
+
+          implementation_end = text.find(
+              "@end",
+              implementation_start,
+          )
+
+          if implementation_end < 0:
+
+              raise SystemExit(
+                  "ERROR: Could not locate GHOSTUIWindow @end."
+              )
+
+          implementation_block = text[
+              implementation_start:
+              implementation_end
+          ]
+
+          method_pattern = re.compile(
+              r'(?m)^[ \t]*-[ \t]*'
+              r'\([ \t]*void[ \t]*\)[ \t]*'
+              r'popupOnscreenKeyboard[ \t]*:'
+          )
+
+          already_implemented = bool(
+              method_pattern.search(
+                  implementation_block
+              )
+          )
+
+          print(
+              "Already implemented in main class:",
+              already_implemented,
+          )
+
+          if already_implemented:
+
+              raise SystemExit(
+                  "ERROR: popupOnscreenKeyboard: is already "
+                  "implemented inside GHOSTUIWindow. "
+                  "Do not add a duplicate implementation."
+              )
+
+
+          # ========================================================
+          # A CATEGORY ADDS THE MISSING RUNTIME SELECTOR WITHOUT
+          # HAVING TO RESTRUCTURE THE EXISTING CLASS.
+          # ========================================================
+
+          category_marker = (
+              "@implementation "
+              "GHOSTUIWindow "
+              "(BlenderOnscreenKeyboardFix)"
+          )
+
+          if category_marker in text:
+
+              raise SystemExit(
+                  "ERROR: keyboard compatibility category "
+                  "already exists unexpectedly."
+              )
+
+          patch = r'''
+
+          /*
+           * Blender iOS compatibility.
+           *
+           * Some Blender UI paths request the software keyboard via
+           * popupOnscreenKeyboard:, while this GHOSTUIWindow revision
+           * does not implement that selector.
+           *
+           * Missing Objective-C selectors raise an exception and
+           * terminate the application.
+           *
+           * Provide the selector and use UIKit's existing responder
+           * chain when available.
+           */
+          @implementation GHOSTUIWindow (BlenderOnscreenKeyboardFix)
+
+          - (void)popupOnscreenKeyboard:(BOOL)show
+          {
+            if (show) {
+
+              /*
+               * Prefer GHOSTUIWindow itself if this revision exposes
+               * text-input responder behavior there.
+               */
+              if ([self canBecomeFirstResponder]) {
+
+                [self becomeFirstResponder];
+
+                return;
+              }
+
+              /*
+               * Some revisions keep responder behavior on the root
+               * content view instead.
+               */
+              UIViewController *controller =
+                  self.rootViewController;
+
+              UIView *view =
+                  controller != nil ? controller.view : nil;
+
+              if (view != nil &&
+                  [view canBecomeFirstResponder])
+              {
+                [view becomeFirstResponder];
+
+                return;
+              }
+
+              /*
+               * No compatible responder is present.
+               *
+               * Do nothing rather than raising an Objective-C
+               * unrecognized-selector exception.
+               */
+              return;
+            }
+
+            /*
+             * Dismiss an existing software keyboard/responder.
+             */
+            [self endEditing:YES];
+
+            if ([self isFirstResponder]) {
+              [self resignFirstResponder];
+            }
+          }
+
+          @end
+
+          '''
+
+          text += patch
+
+          target.write_text(
+              text
+          )
+
+          patched = target.read_text()
+
+
+          # ========================================================
+          # VERIFY CATEGORY + METHOD
+          # ========================================================
+
+          if category_marker not in patched:
+
+              raise SystemExit(
+                  "ERROR: keyboard category was not written."
+              )
+
+          if not re.search(
+              r'(?m)^[ \t]*-[ \t]*'
+              r'\([ \t]*void[ \t]*\)[ \t]*'
+              r'popupOnscreenKeyboard[ \t]*:',
+              patched,
+          ):
+
+              raise SystemExit(
+                  "ERROR: popupOnscreenKeyboard: "
+                  "implementation is missing after patch."
+              )
+
+          Path(
+              "/tmp/ghost-keyboard-target.txt"
+          ).write_text(
+              str(target)
+          )
+
+          print()
+          print(
+              "popupOnscreenKeyboard: compatibility "
+              "implementation added successfully."
+          )
+          PY
+
+          TARGET="$(
+            cat /tmp/ghost-keyboard-target.txt
+          )"
+
+          echo
+          echo "========================================"
+          echo "KEYBOARD PATCH TARGET"
+          echo "========================================"
+
+          echo "$TARGET"
+
+          echo
+          echo "========================================"
+          echo "KEYBOARD SELECTOR AFTER PATCH"
+          echo "========================================"
+
+          grep -n \
+            -E \
+            'popupOnscreenKeyboard|BlenderOnscreenKeyboardFix|becomeFirstResponder|resignFirstResponder|endEditing' \
+            "$TARGET" \
+            || true
+
+          echo
+          echo "========================================"
+          echo "COMBINED IOS GHOST DIFF"
+          echo "========================================"
+
+          git diff -- \
+            intern/ghost/intern \
+            release/ios \
+            || true
+
+          git diff -- \
+            intern/ghost/intern \
+            release/ios \
+            > ios-ghost-fixes.patch
+
+      # ============================================================
+      # 34. VERIFY MODERN UIKIT SOURCE
       # ============================================================
 
       - name: Verify modern UIKit source
@@ -2036,10 +2455,13 @@ jobs:
           test -s \
             modern-uikit-calls.txt
 
+          echo
+          echo "Modern UIKit source remains intact."
+
       # ============================================================
-      # 34. RESTORE XCODE BUILD CACHE
+      # 35. RESTORE PARTIAL XCODE BUILD
       #
-      # DO NOT change fast-v3.
+      # Keep fast-v3 unchanged.
       # ============================================================
 
       - name: Restore incremental Xcode build
@@ -2055,7 +2477,7 @@ jobs:
             blender-build-${{ env.BUILD_CACHE_VERSION }}-xcode26.3-${{ env.BLENDER_SHA }}-ios26.2-cyclesoff-
 
       # ============================================================
-      # 35. INSPECT CACHE
+      # 36. INSPECT BUILD CACHE
       # ============================================================
 
       - name: Inspect incremental build cache
@@ -2065,15 +2487,27 @@ jobs:
           echo "Exact cache hit:"
           echo "${{ steps.build-cache.outputs.cache-hit }}"
 
+          echo
+
           if [ -d "$GITHUB_WORKSPACE/build_ios" ]; then
+
+            echo "Restored build_ios:"
 
             du -sh \
               "$GITHUB_WORKSPACE/build_ios" \
               || true
 
+          else
+
+            echo "No previous build_ios cache restored."
+
           fi
 
+          echo
+
           if [ -d "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" ]; then
+
+            echo "Restored host tools:"
 
             du -sh \
               "$GITHUB_WORKSPACE/../build_ios/build_darwin_tools" \
@@ -2082,9 +2516,9 @@ jobs:
           fi
 
       # ============================================================
-      # 36. CONFIGURE
+      # 37. CONFIGURE
       #
-      # DO NOT DELETE build_ios.
+      # Do NOT delete build_ios.
       # ============================================================
 
       - name: Configure Blender
@@ -2102,6 +2536,30 @@ jobs:
           IOS_DEV_ROOT="$(
             dirname "$IOS_SDK_ROOT"
           )"
+
+          echo "========================================"
+          echo "CONFIGURE"
+          echo "========================================"
+
+          echo
+          echo "Xcode:"
+
+          xcodebuild -version
+
+          echo
+          echo "iPhoneOS SDK:"
+
+          xcrun \
+            --sdk iphoneos \
+            --show-sdk-version
+
+          echo
+          echo "Deployment target:"
+          echo "$IOS_DEPLOYMENT_TARGET"
+
+          echo
+          echo "Bundled asset source:"
+          echo "$BUNDLED_ASSETS_SOURCE"
 
           cmake \
             -S . \
@@ -2125,12 +2583,14 @@ jobs:
             2>&1 | tee configure.log
 
       # ============================================================
-      # 37. VERIFY CONFIG
+      # 38. VERIFY CONFIGURATION
       # ============================================================
 
       - name: Verify configuration
         run: |
           set -euxo pipefail
+
+          echo "===== Important CMake options ====="
 
           grep -E \
             'WITH_CYCLES:|WITH_PYTHON:|WITH_GTESTS:|WITH_TESTS_BATCHED:|WITH_METAL_BACKEND:|CMAKE_OSX_DEPLOYMENT_TARGET:' \
@@ -2151,11 +2611,20 @@ jobs:
               | cut -d= -f2
           )"
 
-          test "$CYCLES" = "OFF"
-          test "$PYTHON" = "ON"
+          echo
+          echo "WITH_CYCLES=$CYCLES"
+          echo "WITH_PYTHON=$PYTHON"
+
+          test \
+            "$CYCLES" \
+            = "OFF"
+
+          test \
+            "$PYTHON" \
+            = "ON"
 
       # ============================================================
-      # 38. FINAL RESOURCE CHECK
+      # 39. FINAL PRE-BUILD RESOURCE CHECK
       # ============================================================
 
       - name: Final pre-build resource check
@@ -2167,8 +2636,12 @@ jobs:
           import os
 
           roots = [
-              Path("release/datafiles"),
-              Path("scripts"),
+              Path(
+                  "release/datafiles"
+              ),
+              Path(
+                  "scripts"
+              ),
               Path(
                   "release/ios/Blender.app/"
                   "Assets.xcassets"
@@ -2209,7 +2682,9 @@ jobs:
                   if resolved in seen:
                       continue
 
-                  seen.add(resolved)
+                  seen.add(
+                      resolved
+                  )
 
                   try:
                       if path.read_bytes()[:200].startswith(magic):
@@ -2220,12 +2695,15 @@ jobs:
           if bad:
 
               print(
-                  "ERROR: source resources still contain "
-                  "Git LFS pointers:"
+                  "ERROR: source resources still "
+                  "contain Git LFS pointers:"
               )
 
               for path in bad:
-                  print(" ", path)
+                  print(
+                      " ",
+                      path,
+                  )
 
               raise SystemExit(1)
 
@@ -2235,7 +2713,7 @@ jobs:
           PY
 
       # ============================================================
-      # 39. BUILD
+      # 40. BUILD BLENDER
       # ============================================================
 
       - name: Build Blender
@@ -2247,6 +2725,13 @@ jobs:
           echo "========================================"
 
           xcodebuild -version
+
+          echo
+          echo "SDK:"
+
+          xcrun \
+            --sdk iphoneos \
+            --show-sdk-version
 
           set +e
 
@@ -2282,7 +2767,7 @@ jobs:
 
             grep -n -C 30 \
               -E \
-              '(^|[[:space:]])error:|fatal error:|static assertion failed|Undefined symbols|duplicate symbol|ld: |clang: error:|actool|CompileAssetCatalog|AppIcon|git-lfs.github.com/spec/v1' \
+              '(^|[[:space:]])error:|fatal error:|static assertion failed|Undefined symbols|duplicate symbol|ld: |clang: error:|actool|CompileAssetCatalog|AppIcon|git-lfs.github.com/spec/v1|popupOnscreenKeyboard' \
               xcodebuild.log \
               > compiler-errors.txt \
               || true
@@ -2294,9 +2779,9 @@ jobs:
               > fmt-errors.txt \
               || true
 
-            grep -n -C 25 \
+            grep -n -C 30 \
               -E \
-              'GHOST_.*IOS|UIWindowScene|effectiveGeometry|coordinateSpace|contentScaleFactor|scalePointToWindow|locationInView|UIKit' \
+              'GHOST_.*IOS|GHOSTUIWindow|UIWindowScene|effectiveGeometry|coordinateSpace|contentScaleFactor|scalePointToWindow|locationInView|popupOnscreenKeyboard|becomeFirstResponder|UIKit' \
               xcodebuild.log \
               > ios-errors.txt \
               || true
@@ -2347,9 +2832,13 @@ jobs:
 
             echo
             echo "===== LAST 700 LINES ====="
-            tail -700 xcodebuild.log || true
+
+            tail -700 \
+              xcodebuild.log \
+              || true
 
             exit "$STATUS"
+
           fi
 
           echo
@@ -2357,10 +2846,11 @@ jobs:
           echo "BUILD SUCCEEDED"
           echo "========================================"
 
-          tail -150 xcodebuild.log
+          tail -150 \
+            xcodebuild.log
 
       # ============================================================
-      # 40. FIND Blender.app
+      # 41. FIND Blender.app
       # ============================================================
 
       - name: Find Blender.app
@@ -2384,6 +2874,9 @@ jobs:
 
             echo "ERROR: Blender.app not found."
 
+            echo
+            echo "Generated app bundles:"
+
             find \
               build_ios \
               -type d \
@@ -2392,18 +2885,21 @@ jobs:
               || true
 
             exit 1
+
           fi
 
           echo "APP=$APP" \
             >> "$GITHUB_ENV"
 
+          echo
           echo "Blender.app:"
           echo "$APP"
 
-          du -sh "$APP"
+          du -sh \
+            "$APP"
 
       # ============================================================
-      # 41. REPAIR CACHED RESOURCE COPIES
+      # 42. REPAIR STALE CACHED RESOURCE COPIES
       # ============================================================
 
       - name: Repair and verify packaged app resources
@@ -2437,6 +2933,7 @@ jobs:
           )
 
           def is_pointer(path):
+
               try:
                   return (
                       path.read_bytes()[:200]
@@ -2481,7 +2978,10 @@ jobs:
 
               source = None
 
-              # datafiles/assets/foo -> bundled assets source/foo
+              # ----------------------------------------------------
+              # datafiles/assets/* -> bundled asset source/*
+              # ----------------------------------------------------
+
               if (
                   len(parts) >= 2
                   and parts[0] == "datafiles"
@@ -2495,7 +2995,10 @@ jobs:
                       )
                   )
 
-              # other datafiles/foo -> release/datafiles/foo
+              # ----------------------------------------------------
+              # datafiles/* -> release/datafiles/*
+              # ----------------------------------------------------
+
               elif parts[0] == "datafiles":
 
                   source = (
@@ -2503,7 +3006,10 @@ jobs:
                       / relative
                   )
 
-              # scripts/foo -> scripts/foo
+              # ----------------------------------------------------
+              # scripts/* -> scripts/*
+              # ----------------------------------------------------
+
               elif parts[0] == "scripts":
 
                   source = Path(
@@ -2513,7 +3019,7 @@ jobs:
               else:
 
                   print(
-                      "Unknown packaged mapping:",
+                      "Unknown packaged resource mapping:",
                       destination,
                   )
 
@@ -2537,7 +3043,9 @@ jobs:
 
                   continue
 
-              if is_pointer(source):
+              if is_pointer(
+                  source
+              ):
 
                   print(
                       "Mapped source remains a pointer:",
@@ -2567,6 +3075,7 @@ jobs:
 
               repaired += 1
 
+          print()
           print(
               "Repaired stale packaged resources:",
               repaired,
@@ -2581,25 +3090,30 @@ jobs:
 
           if remaining:
 
+              print()
               print(
                   "ERROR: unresolved Git LFS pointers "
                   "remain in Blender.app:"
               )
 
               for path in remaining:
-                  print(" ", path)
+                  print(
+                      " ",
+                      path,
+                  )
 
               raise SystemExit(1)
 
+          print()
           print(
               "Blender.app contains no Git LFS pointers."
           )
           PY
 
       # ============================================================
-      # 42. VERIFY EXECUTABLE
+      # 43. VERIFY EXECUTABLE
       #
-      # No BSD-incompatible "find -maxdepth".
+      # No find -maxdepth; macOS BSD find does not support it.
       # ============================================================
 
       - name: Verify Blender executable
@@ -2608,6 +3122,13 @@ jobs:
 
           test -f \
             "$APP/Info.plist"
+
+          echo "===== Info.plist ====="
+
+          plutil \
+            -p \
+            "$APP/Info.plist" \
+            | head -150
 
           EXEC_NAME="$(
             /usr/libexec/PlistBuddy \
@@ -2642,7 +3163,7 @@ jobs:
             echo "ERROR: Blender executable not found."
 
             echo
-            echo "Files in app bundle:"
+            echo "First files inside app bundle:"
 
             find \
               "$APP" \
@@ -2652,6 +3173,7 @@ jobs:
               || true
 
             exit 1
+
           fi
 
           echo "EXEC_NAME=$EXEC_NAME" \
@@ -2660,7 +3182,14 @@ jobs:
           echo "EXECUTABLE=$EXECUTABLE" \
             >> "$GITHUB_ENV"
 
-          file "$EXECUTABLE"
+          echo
+          echo "===== Executable ====="
+
+          file \
+            "$EXECUTABLE"
+
+          echo
+          echo "===== Architecture ====="
 
           lipo \
             -info \
@@ -2668,7 +3197,7 @@ jobs:
             || true
 
       # ============================================================
-      # 43. FINAL APP POINTER SCAN
+      # 44. FINAL APP POINTER SCAN
       # ============================================================
 
       - name: Final Blender.app validation
@@ -2708,7 +3237,10 @@ jobs:
               )
 
               for path in bad:
-                  print(" ", path)
+                  print(
+                      " ",
+                      path,
+                  )
 
               raise SystemExit(1)
 
@@ -2718,7 +3250,7 @@ jobs:
           PY
 
       # ============================================================
-      # 44. PACKAGE UNSIGNED IPA
+      # 45. PACKAGE UNSIGNED IPA
       # ============================================================
 
       - name: Package unsigned IPA
@@ -2741,12 +3273,12 @@ jobs:
             zip \
               -qry \
               -y \
-              ../Blender-5.2-iPad-Xcode26-TouchFix.ipa \
+              ../Blender-5.2-iPad-Touch-KeyboardFix.ipa \
               Payload
           )
 
           test -f \
-            Blender-5.2-iPad-Xcode26-TouchFix.ipa
+            Blender-5.2-iPad-Touch-KeyboardFix.ipa
 
           echo
           echo "========================================"
@@ -2754,10 +3286,17 @@ jobs:
           echo "========================================"
 
           ls -lh \
-            Blender-5.2-iPad-Xcode26-TouchFix.ipa
+            Blender-5.2-iPad-Touch-KeyboardFix.ipa
+
+          echo
+          echo "===== IPA contents ====="
+
+          unzip -l \
+            Blender-5.2-iPad-Touch-KeyboardFix.ipa \
+            | head -180
 
       # ============================================================
-      # 45. BUILD INFO
+      # 46. BUILD INFORMATION
       # ============================================================
 
       - name: Write build information
@@ -2817,17 +3356,24 @@ jobs:
             echo "WITH_TESTS_BATCHED=OFF"
             echo
 
-            echo "Compatibility fixes:"
+            echo "fmt compatibility fixes:"
             echo "BundleKey fmt::join"
             echo "StringRef / BundleKey path fmt::join"
             echo "legacy fmt println compatibility"
             echo
 
-            echo "iOS input fixes:"
+            echo "iOS touch fixes:"
             echo "logical UIKit touch coordinates"
             echo "removed touch contentScaleFactor conversion"
             echo "removed gesture scalePointToWindow conversion"
-            echo "logical pan and pinch coordinates"
+            echo "logical pan/pinch coordinates"
+            echo
+
+            echo "iOS keyboard fixes:"
+            echo "GHOSTUIWindow popupOnscreenKeyboard selector"
+            echo "safe first-responder attempt"
+            echo "safe keyboard dismissal"
+            echo "missing responder becomes no-op instead of crash"
             echo
 
             echo "UIKit compatibility patches:"
@@ -2843,7 +3389,7 @@ jobs:
             echo "scripts LFS materialization"
             echo "bundled assets LFS materialization"
             echo "dead AppIcon LFS replacement"
-            echo "post-build stale-resource repair"
+            echo "post-build stale resource repair"
             echo "final app LFS scan"
             echo
 
@@ -2862,7 +3408,7 @@ jobs:
             build-revision.txt
 
       # ============================================================
-      # 46. BUILD CACHE SIZE
+      # 47. SHOW BUILD CACHE SIZE
       # ============================================================
 
       - name: Show incremental build size
@@ -2884,9 +3430,9 @@ jobs:
             || true
 
       # ============================================================
-      # 47. SAVE PARTIAL/COMPLETE BUILD CACHE
+      # 48. SAVE PARTIAL/COMPLETE BUILD CACHE
       #
-      # fast-v3 remains unchanged.
+      # Keep fast-v3 unchanged.
       # ============================================================
 
       - name: Save incremental Xcode build
@@ -2901,36 +3447,38 @@ jobs:
             blender-build-${{ env.BUILD_CACHE_VERSION }}-xcode26.3-${{ env.BLENDER_SHA }}-ios26.2-cyclesoff-${{ github.run_id }}-${{ github.run_attempt }}
 
       # ============================================================
-      # 48. UPLOAD IPA
+      # 49. UPLOAD IPA
       # ============================================================
 
       - name: Upload Blender IPA
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: Blender-5.2-iPad-Xcode26-TouchFix
+          name: Blender-5.2-iPad-Touch-KeyboardFix
           path: |
-            Blender-5.2-iPad-Xcode26-TouchFix.ipa
+            Blender-5.2-iPad-Touch-KeyboardFix.ipa
             build-revision.txt
             compatibility.patch
             touch-coordinates.patch
+            ios-ghost-fixes.patch
             modern-uikit-calls.txt
           if-no-files-found: error
           retention-days: 30
 
       # ============================================================
-      # 49. UPLOAD DIAGNOSTICS
+      # 50. ALWAYS UPLOAD DIAGNOSTICS
       # ============================================================
 
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: blender-ios-xcode26-touchfix-logs
+          name: blender-ios-touch-keyboardfix-logs
           path: |
             build-revision.txt
             compatibility.patch
             touch-coordinates.patch
+            ios-ghost-fixes.patch
             modern-uikit-calls.txt
             source-lfs.log
             blender-assets-lfs.log
