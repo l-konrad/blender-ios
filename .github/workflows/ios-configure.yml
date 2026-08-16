@@ -1,4 +1,4 @@
-name: Inspect Blender iOS Keyboard
+name: Inspect Blender iOS Keyboard Build
 
 on:
   workflow_dispatch:
@@ -17,45 +17,157 @@ jobs:
           lfs: false
           submodules: false
 
-      - name: Show iOS keyboard code
+      - name: Inspect keyboard build wiring
         shell: bash
         run: |
           set -euxo pipefail
 
           echo "================================================"
-          echo "ALL KEYBOARD REFERENCES"
+          echo "VERIFY FILE EXISTS"
           echo "================================================"
 
-          grep -RIn -E \
-            'popupOnscreenKeyboard|hideOnscreenKeyboard|popupOnScreenKeyboard|hideOnScreenKeyboard|UITextField|UIKeyInput|insertText|deleteBackward|text_field_string|getLastKeyboardString|getKeyboardInput' \
+          test -f intern/ghost/intern/GHOST_KeyboardIOS.mm
+
+          ls -lh \
+            intern/ghost/intern/GHOST_KeyboardIOS.mm
+
+          echo
+          echo "================================================"
+          echo "ALL REFERENCES TO GHOST_KeyboardIOS.mm"
+          echo "================================================"
+
+          grep -RIn \
+            --exclude-dir=.git \
+            'GHOST_KeyboardIOS\.mm' \
+            . \
+            || true
+
+          echo
+          echo "================================================"
+          echo "GHOST CMAKE FILES"
+          echo "================================================"
+
+          find \
+            intern/ghost \
+            -type f \
+            \( \
+              -name 'CMakeLists.txt' \
+              -o \
+              -name '*.cmake' \
+            \) \
+            -print
+
+          echo
+          echo "================================================"
+          echo "intern/ghost/CMakeLists.txt"
+          echo "================================================"
+
+          if [ -f intern/ghost/CMakeLists.txt ]; then
+            cat \
+              intern/ghost/CMakeLists.txt
+          else
+            echo "ERROR: intern/ghost/CMakeLists.txt not found."
+            exit 1
+          fi
+
+          echo
+          echo "================================================"
+          echo "IOS / APPLE SECTIONS IN GHOST CMAKE"
+          echo "================================================"
+
+          grep -n -A120 -B40 \
+            -E \
+            'APPLE|IOS|iOS|APPLE_TARGET_DEVICE|WITH_APPLE_CROSSPLATFORM|GHOST_WindowIOS|GHOST_SystemIOS|GHOST_KeyboardIOS|GHOST_FilePickerIOS' \
+            intern/ghost/CMakeLists.txt \
+            || true
+
+          echo
+          echo "================================================"
+          echo "ALL IOS GHOST SOURCE FILES"
+          echo "================================================"
+
+          find \
             intern/ghost/intern \
-            || true
+            -type f \
+            \( \
+              -name '*IOS.mm' \
+              -o \
+              -name '*IOS.m' \
+              -o \
+              -name '*IOS.hh' \
+              -o \
+              -name '*IOS.h' \
+            \) \
+            -print \
+            | sort
 
           echo
           echo "================================================"
-          echo "GHOST_WindowIOS.hh"
+          echo "WHICH IOS FILES ARE REFERENCED BY CMAKE?"
           echo "================================================"
 
-          cat intern/ghost/intern/GHOST_WindowIOS.hh
+          python3 <<'PY'
+          from pathlib import Path
+
+          cmake = Path(
+              "intern/ghost/CMakeLists.txt"
+          ).read_text()
+
+          files = sorted(
+              Path(
+                  "intern/ghost/intern"
+              ).glob("*IOS.*")
+          )
+
+          for path in files:
+              name = path.name
+
+              status = (
+                  "YES"
+                  if name in cmake
+                  else "NO "
+              )
+
+              print(
+                  f"{status}  {name}"
+              )
+          PY
 
           echo
           echo "================================================"
-          echo "GHOST_WindowIOS.mm RELEVANT SECTIONS"
+          echo "KEYBOARD IMPLEMENTATION METHODS"
           echo "================================================"
 
-          grep -n -A120 -B80 \
+          grep -n -A25 -B15 \
             -E \
-            'GHOSTUIWindow|popupOnscreenKeyboard|hideOnscreenKeyboard|UITextField|UIKeyInput|insertText|deleteBackward|text_field_string' \
-            intern/ghost/intern/GHOST_WindowIOS.mm \
+            'initUITextField|popupOnscreenKeyboard|hideOnscreenKeyboard|getLastKeyboardString' \
+            intern/ghost/intern/GHOST_KeyboardIOS.mm \
             || true
 
           echo
           echo "================================================"
-          echo "GHOST_SystemIOS.mm KEYBOARD SECTIONS"
+          echo "AUTOMATIC DIAGNOSIS"
           echo "================================================"
 
-          grep -n -A100 -B60 \
-            -E \
-            'popupOnScreenKeyboard|hideOnScreenKeyboard|getKeyboardInput|Keyboard' \
-            intern/ghost/intern/GHOST_SystemIOS.mm \
-            || true
+          if grep -q \
+            'GHOST_KeyboardIOS\.mm' \
+            intern/ghost/CMakeLists.txt
+          then
+
+            echo
+            echo "RESULT: GHOST_KeyboardIOS.mm IS referenced by CMake."
+            echo
+            echo "We then need to inspect the surrounding condition"
+            echo "and/or whether the generated Xcode target excludes it."
+
+          else
+
+            echo
+            echo "RESULT: GHOST_KeyboardIOS.mm IS NOT referenced by CMake."
+            echo
+            echo "This is almost certainly the keyboard crash cause."
+            echo
+            echo "The next fix will be to add it to the iOS GHOST"
+            echo "source list and force the GHOST target to rebuild."
+
+          fi
